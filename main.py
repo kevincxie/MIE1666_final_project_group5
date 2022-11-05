@@ -9,10 +9,6 @@ from argparse import ArgumentParser
 
 from toy_problem import get_toy_problem_functions
 
-levels = 2
-regions = 2
-
-z_size = 1
 learning_rate = 1e-2
 steps = 100
 
@@ -21,16 +17,30 @@ class ZDecoder(eqx.Module):
     bias: jnp.ndarray
     region_params: jnp.ndarray
 
-    def __init__(self, in_size, out_size, key):
+    z_size: int
+    levels: int
+    regions: int
+
+    def __init__(self, args, in_size, out_size, key):
+
+        assert(args.levels <= args.latent_dim and args.latent_dim % args.levels == 0)
+
+        self.z_size = args.latent_dim // args.levels
+        self.levels = args.levels
+        self.regions = args.regions
+
         wkey, bkey, Zkey = jax.random.split(key, num=3)
         self.weight = jax.random.normal(wkey, (out_size, in_size))
         self.bias = jax.random.normal(bkey, (out_size,))
-        self.region_params = jax.random.normal(Zkey, (levels, regions, z_size))
+        self.region_params = jax.random.normal(Zkey, (args.levels, args.regions, self.z_size))
+
 
     def __call__(self, phi):
-        # cartesian product
         batch_size, dim = phi.shape
 
+        regions, levels, z_size = self.regions, self.levels, self.z_size
+
+        # cartesian product
       # Can't do mesh grid on n-d and no cartesian product :(
       # grids = jnp.meshgrid(*self.Z)
       # V_alphas = jnp.stack(grids, axis=-1)
@@ -39,7 +49,7 @@ class ZDecoder(eqx.Module):
         # stuff that i'm not even sure is actually any faster than using itertools.product
         i = jnp.mgrid[(slice(0, regions, 1),)*levels]
         i = jnp.stack(i, axis=-1).reshape(-1, levels)
-        V_alphas = self.region_params[i[:, jnp.arange(levels)], jnp.arange(levels)].reshape(-1, z_size)
+        V_alphas = self.region_params[i[:, jnp.arange(levels)], jnp.arange(levels)].reshape(-1, levels*z_size)
 
         phi = jnp.broadcast_to(phi.reshape(batch_size, 1, dim), (batch_size, V_alphas.shape[0], dim))
         V_alphas = jnp.broadcast_to(V_alphas, (batch_size,)+V_alphas.shape)
@@ -72,19 +82,19 @@ q_stars_mock = jnp.array([[0.,0.], [0.,1.],[1.,0.], [1.,1.]])
 def train(args):
     key = jax.random.PRNGKey(args.seed)
 
-    samp_prob, get_phi, cost, mock_sol = get_toy_problem_functions(nwalls=2)
+    samp_prob, get_phi, cost, mock_sol = get_toy_problem_functions(nwalls=args.prob_dim)
 
     probp = samp_prob(key, batchsize=50)
-    print(probp[0].shape)
-    q_star = mock_sol(probp)[0]
+    q_star = mock_sol(probp)
     print(q_star.shape)
     phi_i = get_phi(probp)
     print(phi_i.shape)
 
     #pdb.set_trace()
+    phi_size = args.prob_dim
 
-    in_size, out_size = 3, 2
-    model = ZDecoder(in_size, out_size, key=jax.random.PRNGKey(0))
+    in_size, out_size = args.latent_dim + phi_size, args.prob_dim
+    model = ZDecoder(args, in_size, out_size, key=jax.random.PRNGKey(0))
 
     @eqx.filter_value_and_grad 
     def compute_loss(model, phi, q_star):
@@ -128,6 +138,12 @@ if __name__=='__main__':
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--problem_batch_size", type=int, default=50, help="For each iteration how many problems to sample")
     parser.add_argument("--epochs", type=int, default=100, help="Total iteration count")
+
+    parser.add_argument("--levels", type=int, default=2, help="Number of levels to the problem, can't be greater than latent dimension")
+    parser.add_argument("--regions", type=int, default=2, help="Number of voronoi regions per level")
+
+    parser.add_argument("--latent_dim", type=int, default=2, help="Dimensions in the latent space")
+    parser.add_argument("--prob_dim", type=int, default=2, help="Number of dimensions in the problem, corresponds to the number of walls")
 
     args = parser.parse_args()
 
