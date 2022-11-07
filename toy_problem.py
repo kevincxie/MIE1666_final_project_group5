@@ -5,7 +5,7 @@ from jax import vmap
 from functools import partial
 
 def get_toy_problem_functions(nwalls=2):
-    # Represents ndim walls, each with 2 holes, q is ndim long and each dim 
+    # Represents ndim walls, each with 2 holes, q is ndim long and each dim
     # corresponds to a wall
     # This is [nwalls, nholes_per_wall]
     q_holes = jnp.array([[-1.,1.]]*nwalls)
@@ -13,7 +13,7 @@ def get_toy_problem_functions(nwalls=2):
 
     def get_problem_phi(params):
         """
-        This is the observable context of the problem 
+        This is the observable context of the problem
         """
         # Just expose the shift
         return params[0]
@@ -34,11 +34,13 @@ def get_toy_problem_functions(nwalls=2):
 
     @partial(jnp.vectorize, signature='(),()->()')
     def gaussian_cost_1d(x, center):
+        print(x.shape)
         return -jnp.exp(-((x-center)*2.)**2)
 
+    @partial(vmap, in_axes=0, out_axes=0)
     def cost(q, prob_params):
-        """ 
-        Cost function computation 
+        """
+        Cost function computation
         Args:
             q: (ndim) array
             prob_params: Tuple of arrays representing problem parameters
@@ -48,6 +50,10 @@ def get_toy_problem_functions(nwalls=2):
 
         # Add dummy "holes" broadcast dimension to q
         q = jnp.expand_dims(q,-1)
+        print(q.shape, phi_shift.shape, q_holes.shape)
+        q_holes
+
+        # get the shape of phi to be [batch, *, phi_dim] where * is arbitary dims in q
         cost = gaussian_cost_1d(q, (q_holes+phi_shift))
         # multiply each hole by weight
         cost = cost * phi_weight
@@ -57,16 +63,18 @@ def get_toy_problem_functions(nwalls=2):
         return jnp.sum(cost, (-2,-1))
 
     # Batch over problem params
-    @partial(vmap, in_axes=0, out_axes=0) 
+    @partial(vmap, in_axes=0, out_axes=0)
     def mock_solution(prob_params):
         """
         Pretends to do VOO
         Return:
-            q_star: Approximate solution to phi    
+            q_star: Approximate solution to phi
         """
+        print(q_holes.shape)
         # Get the hole for each wall with the highest weight
         phi_shift, phi_weight = prob_params
         best_hole = jnp.argmax(phi_weight, axis=-1)
+        print(phi_shift.shape)
         # For each wall, grab the best hole
         q_star = (q_holes + phi_shift)[jnp.arange(nwalls),best_hole]
         return q_star

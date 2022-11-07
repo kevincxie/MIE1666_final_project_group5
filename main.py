@@ -9,7 +9,7 @@ from argparse import ArgumentParser
 
 from toy_problem import get_toy_problem_functions
 
-learning_rate = 1e-2
+learning_rate = 1e-1
 steps = 100
 
 class ZDecoder(eqx.Module):
@@ -79,8 +79,7 @@ q_stars_mock = jnp.array([[0.,0.], [0.,1.],[1.,0.], [1.,1.]])
 
 
 
-def train(args):
-    key = jax.random.PRNGKey(args.seed)
+def train(args, model, key):
 
     samp_prob, get_phi, cost, mock_sol = get_toy_problem_functions(nwalls=args.prob_dim)
 
@@ -94,7 +93,6 @@ def train(args):
     phi_size = args.prob_dim
 
     in_size, out_size = args.latent_dim + phi_size, args.prob_dim
-    model = ZDecoder(args, in_size, out_size, key=jax.random.PRNGKey(0))
 
     @eqx.filter_value_and_grad 
     def compute_loss(model, phi, q_star):
@@ -105,7 +103,6 @@ def train(args):
 
         # inner minimization
         best_qs = jnp.min(q_fit, axis=1)
-
         # expectation
         loss = jnp.mean(best_qs, axis=0)
         return loss
@@ -132,6 +129,26 @@ def train(args):
         #losses.append(loss)
         print(f"epoch={epoch}, loss={loss}")
 
+    return model
+
+def test(args, model, key):
+    samp_prob, get_phi, cost, mock_sol = get_toy_problem_functions(nwalls=args.prob_dim)
+    psi = samp_prob(key, args.test_batch_size)
+    gt = mock_sol(psi)
+    phi = get_phi(psi)
+    qh = model(phi)
+
+    best_qs = cost(qh, psi).argmin(axis=1).squeeze()
+    best_q = qh[jnp.arange(args.test_batch_size), best_qs]
+
+    print(best_q.shape)
+
+    err = jnp.linalg.norm(gt - best_q, axis=-1)
+
+    mean_error = jnp.mean(err)
+    std_dev = jnp.std(err)
+
+    return mean_error, std_dev
 
 if __name__=='__main__':
     parser = ArgumentParser()
@@ -142,9 +159,23 @@ if __name__=='__main__':
     parser.add_argument("--levels", type=int, default=2, help="Number of levels to the problem, can't be greater than latent dimension")
     parser.add_argument("--regions", type=int, default=2, help="Number of voronoi regions per level")
 
+    parser.add_argument("--test_batch_size", type=int, default=50, help="For testing how many problems to sample")
     parser.add_argument("--latent_dim", type=int, default=2, help="Dimensions in the latent space")
     parser.add_argument("--prob_dim", type=int, default=2, help="Number of dimensions in the problem, corresponds to the number of walls")
 
     args = parser.parse_args()
+    key = jax.random.PRNGKey(args.seed)
+    train_key, test_key = jax.random.split(key, 2)
 
-    train(args)
+    phi_size = args.prob_dim
+    in_size, out_size = args.latent_dim + phi_size, args.prob_dim
+
+    model = ZDecoder(args, in_size, out_size, key=jax.random.PRNGKey(0))
+
+    print_error = lambda err, std: print(f"After training: Testing error: {err}, Testing STD: {std}")
+
+    print_error(*test(args, model, test_key))
+    model = train(args, model, train_key)
+    print_error(*test(args, model, test_key))
+
+
