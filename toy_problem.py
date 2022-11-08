@@ -74,9 +74,9 @@ def get_toy_problem_functions(nwalls=2):
         # Get the hole for each wall with the highest weight
         phi_shift, phi_weight = prob_params
         best_hole = jnp.argmax(phi_weight, axis=-1)
-        print(phi_shift.shape)
+
         # For each wall, grab the best hole
-        q_star = (q_holes + phi_shift)[jnp.arange(nwalls),best_hole]
+        q_star = (q_holes + phi_shift[..., None])[jnp.arange(nwalls),best_hole]
         return q_star
 
     return sample_problem_params, get_problem_phi, cost, mock_solution

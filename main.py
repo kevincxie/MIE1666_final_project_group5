@@ -74,7 +74,6 @@ q_stars_mock = jnp.array([[0.,0.], [0.,1.],[1.,0.], [1.,1.]])
 #         probp = samp_prob(key, batchsize)
 #         q_star.append(mock_sol(probp)[0])
 #         phi.append(get_phi(probp))
-        
 #     return phi, q_star
 
 
