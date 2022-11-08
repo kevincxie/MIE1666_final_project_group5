@@ -1,3 +1,5 @@
+import os
+
 import jax
 from jax import random
 import jax.numpy as jnp
@@ -5,12 +7,13 @@ import optax
 import equinox as eqx
 import pdb
 
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 from argparse import ArgumentParser
 
 from toy_problem import get_toy_problem_functions
-
-learning_rate = 1e-1
-steps = 100
+from visuals import plot_single_problem
 
 class ZDecoder(eqx.Module):
     weight: jnp.ndarray
@@ -21,18 +24,18 @@ class ZDecoder(eqx.Module):
     levels: int
     regions: int
 
-    def __init__(self, args, in_size, out_size, key):
+    def __init__(self, levels, regions, latent_dim, in_size, out_size, key):
+        assert(levels <= latent_dim and latent_dim % levels == 0)
 
-        assert(args.levels <= args.latent_dim and args.latent_dim % args.levels == 0)
-
-        self.z_size = args.latent_dim // args.levels
-        self.levels = args.levels
-        self.regions = args.regions
+        self.z_size = latent_dim // levels
+        self.levels = levels
+        self.regions = regions
 
         wkey, bkey, Zkey = jax.random.split(key, num=3)
         self.weight = jax.random.normal(wkey, (out_size, in_size))
+        #self.weight = jnp.ones((out_size, in_size))
         self.bias = jax.random.normal(bkey, (out_size,))
-        self.region_params = jax.random.normal(Zkey, (args.levels, args.regions, self.z_size))
+        self.region_params = jax.random.normal(Zkey, (levels, regions, self.z_size))
 
 
     def __call__(self, phi):
@@ -40,13 +43,6 @@ class ZDecoder(eqx.Module):
 
         regions, levels, z_size = self.regions, self.levels, self.z_size
 
-        # cartesian product
-      # Can't do mesh grid on n-d and no cartesian product :(
-      # grids = jnp.meshgrid(*self.Z)
-      # V_alphas = jnp.stack(grids, axis=-1)
-      # V_alphas = V_alphas.reshape(-1, z_size) # [region count, z_dim]
-      #
-        # stuff that i'm not even sure is actually any faster than using itertools.product
         i = jnp.mgrid[(slice(0, regions, 1),)*levels]
         i = jnp.stack(i, axis=-1).reshape(-1, levels)
         V_alphas = self.region_params[i[:, jnp.arange(levels)], jnp.arange(levels)].reshape(-1, levels*z_size)
@@ -56,13 +52,17 @@ class ZDecoder(eqx.Module):
 
         X = jnp.concatenate([V_alphas, phi], axis=-1) # batch, nregions*nlevels, z_size+phi_dim
         qs = jnp.matmul(X, self.weight.T) #[batch, nregions*nlevels, q_size]
+        #qs = V_alphas
 
         return qs
 
-
-
-q_stars_mock = jnp.array([[0.,0.], [0.,1.],[1.,0.], [1.,1.]])
-
+    def eval(self, psi, cost, get_phi):
+        phi = get_phi(psi)
+        batch_size = phi.shape[0]
+        qh = self(phi)
+        best_qs = cost(qh, psi).argmin(axis=1).squeeze()
+        best_q = qh[jnp.arange(batch_size), best_qs]
+        return best_q
 
 # def create_dataset(num_data, nwalls=2, batchsize=3):
 #     phi = []
@@ -79,21 +79,13 @@ q_stars_mock = jnp.array([[0.,0.], [0.,1.],[1.,0.], [1.,1.]])
 
 
 def train(args, model, key):
-
     samp_prob, get_phi, cost, mock_sol = get_toy_problem_functions(nwalls=args.prob_dim)
 
-    probp = samp_prob(key, batchsize=50)
-    q_star = mock_sol(probp)
-    print(q_star.shape)
-    phi_i = get_phi(probp)
-    print(phi_i.shape)
-
-    #pdb.set_trace()
     phi_size = args.prob_dim
 
     in_size, out_size = args.latent_dim + phi_size, args.prob_dim
 
-    @eqx.filter_value_and_grad 
+    @eqx.filter_value_and_grad
     def compute_loss(model, phi, q_star):
         qs = model(phi)
 
@@ -115,10 +107,11 @@ def train(args, model, key):
         model = eqx.apply_updates(model, updates)
         return loss, model, opt_state
 
-    optim = optax.adam(learning_rate)
+    optim = optax.adam(optax.exponential_decay(args.lr, 10, args.decay))
     opt_state = optim.init(model)
     for epoch in range(args.epochs):
         #for sample in range(q_stars_mock.shape[0]):
+        _, key = jax.random.split(key)
         probp = samp_prob(key, batchsize=args.problem_batch_size)
         phi = get_phi(probp)
         q_star = mock_sol(probp)
@@ -126,41 +119,72 @@ def train(args, model, key):
 
         loss = loss.item()
         #losses.append(loss)
-        print(f"epoch={epoch}, loss={loss}")
+        if (epoch + 1) % 100 == 0:
+            print(f"epoch={epoch+1}, loss={loss : .4f}")
 
     return model
+
+
+def plot_solutions(psi, qs, path):
+    sns.set_style('whitegrid')
+    batches = qs.shape[0]
+    fig, axes = plt.subplots(3, batches // 3)
+    for i, ax in enumerate(axes.flatten()):
+        phi = (psi[0][i], psi[1][i])
+        q = qs[i]
+        plot_single_problem(fig, ax, phi, q[None, :], q.shape[0])
+
+    fig.savefig(os.path.join(path, "plots.png"))
+        
+    
 
 def test(args, model, key):
     samp_prob, get_phi, cost, mock_sol = get_toy_problem_functions(nwalls=args.prob_dim)
     psi = samp_prob(key, args.test_batch_size)
     gt = mock_sol(psi)
     phi = get_phi(psi)
-    qh = model(phi)
+    qs = model(phi)
 
-    best_qs = cost(qh, psi).argmin(axis=1).squeeze()
-    best_q = qh[jnp.arange(args.test_batch_size), best_qs]
-
-    print(best_q.shape)
-
+    best_q = model.eval(psi, cost, get_phi)
     err = jnp.linalg.norm(gt - best_q, axis=-1)
 
     mean_error = jnp.mean(err)
     std_dev = jnp.std(err)
 
+    if args.plot:
+        plot_solutions(psi, qs, args.results_path)
+
     return mean_error, std_dev
+
 
 if __name__=='__main__':
     parser = ArgumentParser()
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
-    parser.add_argument("--problem_batch_size", type=int, default=50, help="For each iteration how many problems to sample")
-    parser.add_argument("--epochs", type=int, default=100, help="Total iteration count")
+    parser.add_argument("--problem_batch_size", type=int, default=50,
+            help="For each iteration how many problems to sample")
+    parser.add_argument("--epochs", type=int, default=100,
+            help="Total iteration count")
 
-    parser.add_argument("--levels", type=int, default=2, help="Number of levels to the problem, can't be greater than latent dimension")
-    parser.add_argument("--regions", type=int, default=2, help="Number of voronoi regions per level")
+    parser.add_argument("--levels", type=int, default=2,
+            help="Number of levels to the problem,"
+            + "can't be greater than latent dimension")
+    parser.add_argument("--regions", type=int, default=2,
+            help="Number of voronoi regions per level")
 
-    parser.add_argument("--test_batch_size", type=int, default=50, help="For testing how many problems to sample")
-    parser.add_argument("--latent_dim", type=int, default=2, help="Dimensions in the latent space")
-    parser.add_argument("--prob_dim", type=int, default=2, help="Number of dimensions in the problem, corresponds to the number of walls")
+    parser.add_argument("--test_batch_size", type=int, default=50,
+            help="For testing how many problems to sample")
+    parser.add_argument("--latent_dim", type=int, default=2,
+            help="Dimensions in the latent space")
+    parser.add_argument("--prob_dim", type=int, default=2,
+            help="Number of dimensions in the problem," +
+            "corresponds to the number of walls")
+
+    parser.add_argument("--plot", action='store_true', default=False)
+
+    parser.add_argument("--lr", type=float, default=1e-2)
+    parser.add_argument("--decay", type=float, default=1.)
+
+    parser.add_argument("--results_path", type=str, default=".")
 
     args = parser.parse_args()
     key = jax.random.PRNGKey(args.seed)
@@ -169,12 +193,14 @@ if __name__=='__main__':
     phi_size = args.prob_dim
     in_size, out_size = args.latent_dim + phi_size, args.prob_dim
 
-    model = ZDecoder(args, in_size, out_size, key=jax.random.PRNGKey(0))
+    model = ZDecoder(args.levels, args.regions, args.latent_dim, in_size, out_size, key=jax.random.PRNGKey(0))
 
     print_error = lambda err, std: print(f"After training: Testing error: {err}, Testing STD: {std}")
-
-    print_error(*test(args, model, test_key))
+    
+    test_1_key, test_2_key = jax.random.split(key)
+    print_error(*test(args, model, test_1_key))
     model = train(args, model, train_key)
-    print_error(*test(args, model, test_key))
+    print_error(*test(args, model, test_2_key))
 
-
+    eqx.tree_serialise_leaves(os.path.join(args.results_path, "model.eqx"),
+            model)

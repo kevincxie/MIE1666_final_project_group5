@@ -2,6 +2,7 @@ from typing import Union, Optional, Tuple, List
 
 import jax.numpy as jnp
 import numpy as np
+import scipy.interpolate as interp
 
 from jax.numpy import DeviceArray
 
@@ -24,8 +25,8 @@ def __paint_wall(x_loc : float, n_holes : int, y_min : float,
     walls[1:-1] += wall_offsets * scale / DEFAULT_SCENE_HEIGHT  + hole_heights * 0.5
     walls[-1] += hole_height
     ys = walls
-    
-    hole_heights = jnp.concatenate([hole_heights, 
+
+    hole_heights = jnp.concatenate([hole_heights,
                                     jnp.array([hole_height])])
     rects = [
         Rectangle((x, ys[i]), wall_width, (ys[i+1] - hole_heights[i] - ys[i]))
@@ -35,7 +36,7 @@ def __paint_wall(x_loc : float, n_holes : int, y_min : float,
     return rects
 
 def plot_background(fig : plt.Figure, ax : plt.Axes,
-                    psi : Tuple[DeviceArray, DeviceArray], 
+                    psi : Tuple[DeviceArray, DeviceArray],
                     n_walls : int, n_holes : int,
                     wall_color : Union[Tuple[int, int, int], int]=127,
                     x_lim : Optional[Tuple[float]]=(-1., 1.),
@@ -67,21 +68,36 @@ def plot_background(fig : plt.Figure, ax : plt.Axes,
     return fig, ax
 
 
-def plot_solution(ax : plt.Axes, soln : DeviceArray, **kwargs):
+def plot_solution(ax : plt.Axes, soln : DeviceArray, marker='x', line_style='-', **kwargs):
     xmin, xmax = ax.get_xlim()
     ymin, ymax = ax.get_ylim()
     scale = DEFAULT_SCENE_HEIGHT / (ymax - ymin)
     n_walls = soln.shape[-1]
     wall_horizontal_spacing = (xmax - xmin) / (n_walls + 1)
 
-    x = (np.arange(n_walls) + 1) * wall_horizontal_spacing + xmin
-    x = np.repeat(x, soln.shape[0])
+    x_ = (np.arange(n_walls) + 1) * wall_horizontal_spacing + xmin
+    x = np.repeat(x_, soln.shape[0])
+    y = soln.reshape(-1)
 
-    soln *= 1. / scale
-    ax.scatter(x, soln.reshape(-1), **kwargs)
+    y *= 1. / scale
+    ax.scatter(x, y, marker=marker, **kwargs)
+
+    x = np.concatenate([-np.ones((1,)), x, np.ones((1,))])
+    y = np.concatenate([np.zeros((1,)), y, np.zeros((1,))])
+    
+    f = interp.interp1d(x, y, 'cubic')
+    x_sm = np.linspace(-1, 1, 100)
+    y_sm = f(x_sm)
+    ax.plot(x_sm, y_sm, linestyle=line_style, **kwargs)
+    
     return ax
 
+def plot_single_problem(fig, ax, phi, soln, modes):
+    plot_background(fig, ax, phi, 2, 2, wall_width_pct=0.25, wall_height_pct=0.7)
+    ax.set_xlim(-1, 1)
+    ax.set_ylim(-1, 1)
 
+    for i in range(modes):
+        plot_solution(ax, soln[:, i, :])
 
-
-
+    ax.tick_params(which='both', bottom=False, top=False, labelbottom=False, labelleft=False)

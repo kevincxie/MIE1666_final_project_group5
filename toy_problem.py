@@ -34,7 +34,6 @@ def get_toy_problem_functions(nwalls=2):
 
     @partial(jnp.vectorize, signature='(),()->()')
     def gaussian_cost_1d(x, center):
-        print(x.shape)
         return -jnp.exp(-((x-center)*2.)**2)
 
     @partial(vmap, in_axes=0, out_axes=0)
@@ -50,14 +49,12 @@ def get_toy_problem_functions(nwalls=2):
 
         # Add dummy "holes" broadcast dimension to q
         q = jnp.expand_dims(q,-1)
-        print(q.shape, phi_shift.shape, q_holes.shape)
         q_holes
 
         # get the shape of phi to be [batch, *, phi_dim] where * is arbitary dims in q
         cost = gaussian_cost_1d(q, (q_holes+phi_shift))
         # multiply each hole by weight
         cost = cost * phi_weight
-        print(cost.shape)
 
         # Sum over all holes on each wall
         return jnp.sum(cost, (-2,-1))
@@ -70,7 +67,6 @@ def get_toy_problem_functions(nwalls=2):
         Return:
             q_star: Approximate solution to phi
         """
-        print(q_holes.shape)
         # Get the hole for each wall with the highest weight
         phi_shift, phi_weight = prob_params
         best_hole = jnp.argmax(phi_weight, axis=-1)
