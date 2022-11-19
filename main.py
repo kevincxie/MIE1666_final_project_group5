@@ -125,10 +125,10 @@ def train(args, model, key):
     return model
 
 
-def plot_solutions(psi, qs, path):
+def plot_solutions(args, psi, qs, path):
     sns.set_style('whitegrid')
     batches = qs.shape[0]
-    fig, axes = plt.subplots(3, batches // 3)
+    fig, axes = plt.subplots(args.rows, batches // args.rows, figsize=(args.plot_width, args.plot_height))
     for i, ax in enumerate(axes.flatten()):
         phi = (psi[0][i], psi[1][i])
         q = qs[i]
@@ -136,8 +136,6 @@ def plot_solutions(psi, qs, path):
 
     fig.savefig(os.path.join(path, "plots.png"))
         
-    
-
 def test(args, model, key):
     samp_prob, get_phi, cost, mock_sol = get_toy_problem_functions(nwalls=args.prob_dim)
     psi = samp_prob(key, args.test_batch_size)
@@ -152,7 +150,7 @@ def test(args, model, key):
     std_dev = jnp.std(err)
 
     if args.plot:
-        plot_solutions(psi, qs, args.results_path)
+        plot_solutions(args, psi, qs, args.results_path)
 
     return mean_error, std_dev
 
@@ -180,6 +178,9 @@ if __name__=='__main__':
             "corresponds to the number of walls")
 
     parser.add_argument("--plot", action='store_true', default=False)
+    parser.add_argument("--rows", type=int, default=1, help="Number of columns in the plot grid")
+    parser.add_argument("--plot_height", type=int, default=6)
+    parser.add_argument("--plot_width", type=int, default=8)
 
     parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--decay", type=float, default=1.)
