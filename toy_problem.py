@@ -26,7 +26,7 @@ def get_toy_problem_functions(nwalls=2):
             (phi): Tuple of params
         """
         # Small shift in location per wall
-        phi_shift = jax.random.uniform(key, shape=(batchsize,nwalls,), minval=-0.2, maxval=0.2)
+        phi_shift = jax.random.uniform(key, shape=(batchsize,nwalls,), minval=-0.5, maxval=0.5)
 
         # Weigh each hole differently
         phi_weight = jax.random.uniform(key, shape=(batchsize,nwalls,nholes_per_wall), minval=0.1, maxval=1.0)
@@ -34,6 +34,7 @@ def get_toy_problem_functions(nwalls=2):
 
     @partial(jnp.vectorize, signature='(),()->()')
     def gaussian_cost_1d(x, center):
+        print(x.shape, center.shape)
         return -jnp.exp(-((x-center)*2.)**2)
 
     @partial(vmap, in_axes=0, out_axes=0)
@@ -52,7 +53,8 @@ def get_toy_problem_functions(nwalls=2):
         q_holes
 
         # get the shape of phi to be [batch, *, phi_dim] where * is arbitary dims in q
-        cost = gaussian_cost_1d(q, (q_holes+phi_shift))
+        print(q_holes.shape, phi_shift.shape)
+        cost = gaussian_cost_1d(q, (q_holes+phi_shift[..., None]))
         # multiply each hole by weight
         cost = cost * phi_weight
 

@@ -85,7 +85,7 @@ def plot_solution(ax : plt.Axes, soln : DeviceArray, marker='x', line_style='-',
     x = np.concatenate([-np.ones((1,)), x, np.ones((1,))])
     y = np.concatenate([np.zeros((1,)), y, np.zeros((1,))])
     
-    f = interp.interp1d(x, y, 'cubic')
+    f = interp.interp1d(x, y, 'linear')
     x_sm = np.linspace(-1, 1, 100)
     y_sm = f(x_sm)
     ax.plot(x_sm, y_sm, linestyle=line_style, **kwargs)
@@ -93,7 +93,7 @@ def plot_solution(ax : plt.Axes, soln : DeviceArray, marker='x', line_style='-',
     return ax
 
 def plot_single_problem(fig, ax, phi, soln, modes):
-    plot_background(fig, ax, phi, 2, 2, wall_width_pct=0.25, wall_height_pct=0.7)
+    plot_background(fig, ax, phi, phi[0].shape[0], phi[1].shape[1], wall_width_pct=0.25, wall_height_pct=0.7)
     ax.set_xlim(-1, 1)
     ax.set_ylim(-1, 1)
 
