@@ -169,7 +169,7 @@ if __name__=='__main__':
     parser.add_argument("--regions", type=int, default=2,
             help="Number of voronoi regions per level")
 
-    parser.add_argument("--test_batch_size", type=int, default=50,
+    parser.add_argument("--test_batch_size", type=int, default=4,
             help="For testing how many problems to sample")
     parser.add_argument("--latent_dim", type=int, default=2,
             help="Dimensions in the latent space")
