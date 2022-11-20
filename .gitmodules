@@ -1,0 +1,3 @@
+[submodule "baselines/baselines/lamcts"]
+	path = baselines/baselines/lamcts
+	url = git@github.com:facebookresearch/LaMCTS.git
