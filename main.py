@@ -1,4 +1,5 @@
 import os
+import importlib
 
 import jax
 from jax import random
@@ -12,8 +13,7 @@ import seaborn as sns
 
 from argparse import ArgumentParser
 
-from toy_problem import get_toy_problem_functions
-from visuals import plot_single_problem
+import problems
 
 class ZDecoder(eqx.Module):
     weight: jnp.ndarray
@@ -39,6 +39,7 @@ class ZDecoder(eqx.Module):
 
 
     def __call__(self, phi):
+        phi = phi.reshape(phi.shape[0], -1) # Treat all the enviorenment parameters as one long vector..
         batch_size, dim = phi.shape
 
         regions, levels, z_size = self.regions, self.levels, self.z_size
@@ -56,13 +57,6 @@ class ZDecoder(eqx.Module):
 
         return qs
 
-    def eval(self, psi, cost, get_phi):
-        phi = get_phi(psi)
-        batch_size = phi.shape[0]
-        qh = self(phi)
-        best_qs = cost(qh, psi).argmin(axis=1).squeeze()
-        best_q = qh[jnp.arange(batch_size), best_qs]
-        return best_q
 
 # def create_dataset(num_data, nwalls=2, batchsize=3):
 #     phi = []
@@ -77,9 +71,20 @@ class ZDecoder(eqx.Module):
 #     return phi, q_star
 
 
+def eval(model, psi, cost, get_phi, state_dim):
+    phi = get_phi(psi)
+    batch_size = phi.shape[0]
+    
+    
+    qh = model(phi)
+    qh = qh.reshape(batch_size, qh.shape[1], -1, state_dim)
+    
+    best_qs = cost(qh, psi).argmin(axis=1).squeeze()
+    best_q = qh[jnp.arange(batch_size), best_qs]
+    return best_q
 
 def train(args, model, key):
-    samp_prob, get_phi, cost, mock_sol = get_toy_problem_functions(nwalls=args.prob_dim)
+    samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.prob_dim)
 
     phi_size = args.prob_dim
 
@@ -111,10 +116,12 @@ def train(args, model, key):
     opt_state = optim.init(model)
     for epoch in range(args.epochs):
         #for sample in range(q_stars_mock.shape[0]):
-        _, key = jax.random.split(key)
-        probp = samp_prob(key, batchsize=args.problem_batch_size)
+        _, key_sample, key_solve = jax.random.split(key, 3)
+       # key_sample = key_solve = key
+        probp = samp_prob(key_sample, batch_size=args.problem_batch_size)
         phi = get_phi(probp)
-        q_star = mock_sol(probp)
+        q_star = mock_sol(key_solve, probp)
+        q_star = q_star.reshape(args.problem_batch_size, -1)
         loss, model, opt_state = make_step(model, phi, q_star, opt_state)
 
         loss = loss.item()
@@ -125,32 +132,41 @@ def train(args, model, key):
     return model
 
 
-def plot_solutions(args, psi, qs, path):
+def plot_solutions(args, psi, gt, qs, path):
     sns.set_style('whitegrid')
     batches = qs.shape[0]
     fig, axes = plt.subplots(args.rows, batches // args.rows, figsize=(args.plot_width, args.plot_height))
-    for i, ax in enumerate(axes.flatten()):
+    if batches // args.rows > 1:
+        axes = axes.flatten()
+    else:
+        axes = [axes]
+        
+    for i, ax in enumerate(axes):
         phi = (psi[0][i], psi[1][i])
         q = qs[i]
-        plot_single_problem(fig, ax, phi, q[None, :], q.shape[0])
+        gt_ = gt[i]
+        args.problem_inst.plot_single_problem(fig, ax, phi, q[None, :], q.shape[0])
+  #      args.problem_inst.plot_single_problem(fig, ax, phi, gt_.reshape(1, 1, -1), 1)
 
     fig.savefig(os.path.join(path, "plots.png"))
         
 def test(args, model, key):
-    samp_prob, get_phi, cost, mock_sol = get_toy_problem_functions(nwalls=args.prob_dim)
-    psi = samp_prob(key, args.test_batch_size)
-    gt = mock_sol(psi)
+    samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.prob_dim)
+    key_sample, key_solve = jax.random.split(key)
+    #key_sample = key_solve = key
+    psi = samp_prob(key_sample, args.test_batch_size)
+    gt = mock_sol(key_solve, psi)
     phi = get_phi(psi)
     qs = model(phi)
 
-    best_q = model.eval(psi, cost, get_phi)
+    best_q = eval(model, psi, cost, get_phi, args.problem_inst.PHI_STATE_DIM)
     err = jnp.linalg.norm(gt - best_q, axis=-1)
 
     mean_error = jnp.mean(err)
     std_dev = jnp.std(err)
 
     if args.plot:
-        plot_solutions(args, psi, qs, args.results_path)
+        plot_solutions(args, psi, gt, qs, args.results_path)
 
     return mean_error, std_dev
 
@@ -158,6 +174,8 @@ def test(args, model, key):
 if __name__=='__main__':
     parser = ArgumentParser()
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--problem", type=str, default="maze_1d")
+    
     parser.add_argument("--problem_batch_size", type=int, default=50,
             help="For each iteration how many problems to sample")
     parser.add_argument("--epochs", type=int, default=100,
@@ -188,15 +206,24 @@ if __name__=='__main__':
     parser.add_argument("--results_path", type=str, default=".")
 
     args = parser.parse_args()
+    
+    # Simpler for now
+    args.trajectory_length = args.prob_dim
+    
     key = jax.random.PRNGKey(args.seed)
     train_key, test_key = jax.random.split(key, 2)
+    
+    args.problem_inst = importlib.import_module(f"problems.{args.problem}")
 
-    phi_size = args.prob_dim
-    in_size, out_size = args.latent_dim + phi_size, args.prob_dim
-
+    phi_size = args.prob_dim * args.problem_inst.PHI_STATE_DIM
+    
+    in_size = args.latent_dim + phi_size    
+    out_size = args.trajectory_length * args.problem_inst.PHI_STATE_DIM
+    
     model = ZDecoder(args.levels, args.regions, args.latent_dim, in_size, out_size, key=jax.random.PRNGKey(0))
 
     print_error = lambda err, std: print(f"After training: Testing error: {err}, Testing STD: {std}")
+    
     
     test_1_key, test_2_key = jax.random.split(key)
     print_error(*test(args, model, test_1_key))

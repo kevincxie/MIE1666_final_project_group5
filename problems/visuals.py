@@ -92,12 +92,3 @@ def plot_solution(ax : plt.Axes, soln : DeviceArray, marker='x', line_style='-',
     
     return ax
 
-def plot_single_problem(fig, ax, phi, soln, modes):
-    plot_background(fig, ax, phi, phi[0].shape[0], phi[1].shape[1], wall_width_pct=0.25, wall_height_pct=0.7)
-    ax.set_xlim(-1, 1)
-    ax.set_ylim(-1, 1)
-
-    for i in range(modes):
-        plot_solution(ax, soln[:, i, :])
-
-    ax.tick_params(which='both', bottom=False, top=False, labelbottom=False, labelleft=False)
