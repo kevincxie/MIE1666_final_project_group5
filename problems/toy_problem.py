@@ -4,7 +4,22 @@ import jax.numpy as jnp
 from jax import vmap
 from functools import partial
 
-def get_toy_problem_functions(nwalls=2):
+from .visuals import plot_background, plot_solution
+import problems
+
+PHI_STATE_DIM = 1 # Size of the problem desc per dimension
+
+def plot_single_problem(fig, ax, phi, soln, modes):
+    plot_background(fig, ax, phi, phi[0].shape[0], phi[1].shape[1], wall_width_pct=0.25, wall_height_pct=0.7)
+    ax.set_xlim(-1, 1)
+    ax.set_ylim(-1, 1)
+
+    for i in range(modes):
+        plot_solution(ax, soln[:, i, :])
+
+    ax.tick_params(which='both', bottom=False, top=False, labelbottom=False, labelleft=False)
+
+def make_problem(nwalls=2):
     # Represents ndim walls, each with 2 holes, q is ndim long and each dim
     # corresponds to a wall
     # This is [nwalls, nholes_per_wall]
@@ -18,7 +33,7 @@ def get_toy_problem_functions(nwalls=2):
         # Just expose the shift
         return params[0]
 
-    def sample_problem_params(key, batchsize) -> Tuple:
+    def sample_problem_params(key, batch_size) -> Tuple:
         """
         Args:
             key: jax RNG key
@@ -26,15 +41,14 @@ def get_toy_problem_functions(nwalls=2):
             (phi): Tuple of params
         """
         # Small shift in location per wall
-        phi_shift = jax.random.uniform(key, shape=(batchsize,nwalls,), minval=-0.5, maxval=0.5)
+        phi_shift = jax.random.uniform(key, shape=(batch_size,nwalls,), minval=-0.5, maxval=0.5)
 
         # Weigh each hole differently
-        phi_weight = jax.random.uniform(key, shape=(batchsize,nwalls,nholes_per_wall), minval=0.1, maxval=1.0)
+        phi_weight = jax.random.uniform(key, shape=(batch_size,nwalls,nholes_per_wall), minval=0.1, maxval=1.0)
         return (phi_shift, phi_weight)
 
     @partial(jnp.vectorize, signature='(),()->()')
     def gaussian_cost_1d(x, center):
-        print(x.shape, center.shape)
         return -jnp.exp(-((x-center)*2.)**2)
 
     @partial(vmap, in_axes=0, out_axes=0)
@@ -53,7 +67,6 @@ def get_toy_problem_functions(nwalls=2):
         q_holes
 
         # get the shape of phi to be [batch, *, phi_dim] where * is arbitary dims in q
-        print(q_holes.shape, phi_shift.shape)
         cost = gaussian_cost_1d(q, (q_holes+phi_shift[..., None]))
         # multiply each hole by weight
         cost = cost * phi_weight
@@ -62,8 +75,8 @@ def get_toy_problem_functions(nwalls=2):
         return jnp.sum(cost, (-2,-1))
 
     # Batch over problem params
-    @partial(vmap, in_axes=0, out_axes=0)
-    def mock_solution(prob_params):
+    @partial(vmap, in_axes=(None, 0), out_axes=0)
+    def mock_solution(key, prob_params):
         """
         Pretends to do VOO
         Return:
