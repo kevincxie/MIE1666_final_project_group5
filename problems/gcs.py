@@ -27,7 +27,6 @@ def plot_solution(fig, ax, solution : Float32[Array, "length state"], linestyle=
 
 def plot_single_problem(fig, ax, psi : ProblemParamType, soln : TrajectoryType, modes : int):
     plot_background(fig, ax, psi)
-    print(soln, modes)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     soln = soln.reshape(soln.shape[0], soln.shape[1], -1, PHI_STATE_DIM)
@@ -49,7 +48,7 @@ def make_problem(patches : int = 2, box : Float32[jnp.ndarray, "2 state"] = jnp.
         signed_dist_cost = (d - rad).sum(axis=-1).min(axis=-1)
         path_length = jnp.linalg.norm(q[:, :, 1:, :] - q[:, :, :-1, :], axis=-1)
         path_length_costs = path_length.sum(axis=-1)
-        return + signed_dist_cost
+        return signed_dist_cost
         
     def sample_problem_params(key : random.PRNGKey, batch_size : int) -> ProblemParamType:
         # Add padding
@@ -59,6 +58,8 @@ def make_problem(patches : int = 2, box : Float32[jnp.ndarray, "2 state"] = jnp.
         loc_k, rad_k = random.split(key, 2)
         
         loc = random.uniform(key, shape=(batch_size, patches, box.shape[1]), minval=padded_min, maxval=padded_max)
+        loc = jnp.ones((batch_size, patches, box.shape[1])) * 0.2
+        loc = loc.at[:, -1, :].set(0.4)
         rad = random.uniform(key, shape=(batch_size, patches), minval=min_rad, maxval=max_rad)
         
         return loc, rad

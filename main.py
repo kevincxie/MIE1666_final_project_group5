@@ -16,15 +16,16 @@ from argparse import ArgumentParser
 import problems
 
 class ZDecoder(eqx.Module):
-    weight: jnp.ndarray
-    bias: jnp.ndarray
+    weight1: jnp.ndarray
+    weight2: jnp.ndarray
+    #bias: jnp.ndarray
     region_params: jnp.ndarray
 
     z_size: int
     levels: int
     regions: int
 
-    def __init__(self, levels, regions, latent_dim, in_size, out_size, key):
+    def __init__(self, levels, regions, latent_dim, phi_size, out_size, key):
         assert(levels <= latent_dim and latent_dim % levels == 0)
 
         self.z_size = latent_dim // levels
@@ -32,9 +33,10 @@ class ZDecoder(eqx.Module):
         self.regions = regions
 
         wkey, bkey, Zkey = jax.random.split(key, num=3)
-        self.weight = jax.random.normal(wkey, (out_size, in_size))
+        self.weight1 = jax.random.normal(wkey, (out_size, latent_dim))
+        self.weight2 = jax.random.normal(bkey, (out_size, phi_size))
         #self.weight = jnp.ones((out_size, in_size))
-        self.bias = jax.random.normal(bkey, (out_size,))
+        #self.bias = jax.random.normal(bkey, (out_size,))
         self.region_params = jax.random.normal(Zkey, (levels, regions, self.z_size))
 
 
@@ -45,15 +47,18 @@ class ZDecoder(eqx.Module):
         regions, levels, z_size = self.regions, self.levels, self.z_size
 
         i = jnp.mgrid[(slice(0, regions, 1),)*levels]
-        i = jnp.stack(i, axis=-1).reshape(-1, levels)
-        V_alphas = self.region_params[i[:, jnp.arange(levels)], jnp.arange(levels)].reshape(-1, levels*z_size)
+        V_alphas = self.region_params[jnp.arange(levels), i.T].reshape(-1, levels*z_size)
+      #  jax.debug.print("V_alpha: {}", V_alphas)
 
         phi = jnp.broadcast_to(phi.reshape(batch_size, 1, dim), (batch_size, V_alphas.shape[0], dim))
         V_alphas = jnp.broadcast_to(V_alphas, (batch_size,)+V_alphas.shape)
 
         X = jnp.concatenate([V_alphas, phi], axis=-1) # batch, nregions*nlevels, z_size+phi_dim
-        qs = jnp.matmul(X, self.weight.T) #[batch, nregions*nlevels, q_size]
+        qs = V_alphas + phi #jnp.matmul(phi, self.weight2.T)
+      #  jax.debug.print("{}", phi)
+        #qs = jnp.matmul(X, self.weight.T) #[batch, nregions*nlevels, q_size]
         #qs = V_alphas
+#        jax.debug.print("{}", V_alphas)
 
         return qs
 
@@ -75,7 +80,6 @@ def eval(model, psi, cost, get_phi, state_dim):
     phi = get_phi(psi)
     batch_size = phi.shape[0]
     
-    
     qh = model(phi)
     qh = qh.reshape(batch_size, qh.shape[1], -1, state_dim)
     
@@ -85,9 +89,7 @@ def eval(model, psi, cost, get_phi, state_dim):
 
 def train(args, model, key):
     samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.prob_dim)
-
     phi_size = args.prob_dim
-
     in_size, out_size = args.latent_dim + phi_size, args.prob_dim
 
     @eqx.filter_value_and_grad
@@ -96,6 +98,7 @@ def train(args, model, key):
 
         q_fit = (qs - q_star[:, None, :])**2
         q_fit = jnp.sum(q_fit, axis=-1)
+      #  jax.debug.print("q_fit{}, phi:{}", q_fit, phi)
 
         # inner minimization
         best_qs = jnp.min(q_fit, axis=1)
@@ -119,7 +122,7 @@ def train(args, model, key):
         _, key_sample, key_solve = jax.random.split(key, 3)
        # key_sample = key_solve = key
         probp = samp_prob(key_sample, batch_size=args.problem_batch_size)
-        phi = get_phi(probp)
+        phi = get_phi(probp).reshape(args.problem_batch_size, -1)
         q_star = mock_sol(key_solve, probp)
         q_star = q_star.reshape(args.problem_batch_size, -1)
         loss, model, opt_state = make_step(model, phi, q_star, opt_state)
@@ -220,7 +223,7 @@ if __name__=='__main__':
     in_size = args.latent_dim + phi_size    
     out_size = args.trajectory_length * args.problem_inst.PHI_STATE_DIM
     
-    model = ZDecoder(args.levels, args.regions, args.latent_dim, in_size, out_size, key=jax.random.PRNGKey(0))
+    model = ZDecoder(args.levels, args.regions, args.latent_dim, phi_size, out_size, key=jax.random.PRNGKey(0))
 
     print_error = lambda err, std: print(f"After training: Testing error: {err}, Testing STD: {std}")
     
