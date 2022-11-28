@@ -6,6 +6,7 @@ from jax import random
 import jax.numpy as jnp
 import optax
 import equinox as eqx
+import equinox.nn as nn
 import pdb
 
 import matplotlib.pyplot as plt
@@ -13,13 +14,20 @@ import seaborn as sns
 
 from argparse import ArgumentParser
 
+from typing import Callable
+from functools import partial
+
 import problems
 
+
+
 class ZDecoder(eqx.Module):
-    weight1: jnp.ndarray
+    weight: jnp.ndarray
     weight2: jnp.ndarray
     #bias: jnp.ndarray
     region_params: jnp.ndarray
+    
+    model: nn.MLP
 
     z_size: int
     levels: int
@@ -33,12 +41,18 @@ class ZDecoder(eqx.Module):
         self.regions = regions
 
         wkey, bkey, Zkey = jax.random.split(key, num=3)
-        self.weight1 = jax.random.normal(wkey, (out_size, latent_dim))
+    #    self.weight1 = jax.random.normal(wkey, (out_size, latent_dim))
         self.weight2 = jax.random.normal(bkey, (out_size, phi_size))
-        #self.weight = jnp.ones((out_size, in_size))
+        self.weight = jnp.ones((out_size, in_size))
         #self.bias = jax.random.normal(bkey, (out_size,))
         self.region_params = jax.random.normal(Zkey, (levels, regions, self.z_size))
-
+        
+        self.model = nn.MLP(in_size, out_size, 64, 2, key=wkey)
+ 
+    @partial(jax.vmap, in_axes=(None, 0), out_axes=0)   
+    @partial(jax.vmap, in_axes=(None, 0), out_axes=0)   
+    def eval_mlp(self, x):
+        return self.model(x)
 
     def __call__(self, phi):
         phi = phi.reshape(phi.shape[0], -1) # Treat all the enviorenment parameters as one long vector..
@@ -54,9 +68,12 @@ class ZDecoder(eqx.Module):
         V_alphas = jnp.broadcast_to(V_alphas, (batch_size,)+V_alphas.shape)
 
         X = jnp.concatenate([V_alphas, phi], axis=-1) # batch, nregions*nlevels, z_size+phi_dim
-        qs = V_alphas + phi #jnp.matmul(phi, self.weight2.T)
+        #qs = V_alphas + jnp.matmul(phi, self.weight2.T)
       #  jax.debug.print("{}", phi)
         #qs = jnp.matmul(X, self.weight.T) #[batch, nregions*nlevels, q_size]
+        
+        print(X.shape)
+        qs = self.eval_mlp(X)
         #qs = V_alphas
 #        jax.debug.print("{}", V_alphas)
 
@@ -116,7 +133,7 @@ def train(args, model, key):
         return loss, model, opt_state
 
     optim = optax.adam(optax.exponential_decay(args.lr, 10, args.decay))
-    opt_state = optim.init(model)
+    opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
     for epoch in range(args.epochs):
         #for sample in range(q_stars_mock.shape[0]):
         _, key_sample, key_solve = jax.random.split(key, 3)
