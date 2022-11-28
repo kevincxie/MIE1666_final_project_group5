@@ -47,7 +47,7 @@ def make_problem(nwalls=2):
         phi_weight = jax.random.uniform(key, shape=(batch_size,nwalls,nholes_per_wall), minval=0.1, maxval=1.0)
         return (phi_shift, phi_weight)
 
-    @partial(jnp.vectorize, signature='(),()->()')
+    @partial(jnp.vectorize, signature='(k,l,s,1),(l,1,r)->(k,l,s,r)')
     def gaussian_cost_1d(x, center):
         return -jnp.exp(-((x-center)*2.)**2)
 
@@ -64,15 +64,14 @@ def make_problem(nwalls=2):
 
         # Add dummy "holes" broadcast dimension to q
         q = jnp.expand_dims(q,-1)
-        q_holes
 
         # get the shape of phi to be [batch, *, phi_dim] where * is arbitary dims in q
-        cost = gaussian_cost_1d(q, (q_holes+phi_shift[..., None]))
+        cost = gaussian_cost_1d(q, (q_holes+phi_shift[..., None])[:, None, :])
         # multiply each hole by weight
-        cost = cost * phi_weight
+        cost = cost * phi_weight[:, None, :]
 
         # Sum over all holes on each wall
-        return jnp.sum(cost, (-2,-1))
+        return jnp.sum(cost, (-3,-2,-1))
 
     # Batch over problem params
     @partial(vmap, in_axes=(None, 0), out_axes=0)
@@ -88,7 +87,7 @@ def make_problem(nwalls=2):
 
         # For each wall, grab the best hole
         q_star = (q_holes + phi_shift[..., None])[jnp.arange(nwalls),best_hole]
-        return q_star
+        return q_star[:, None]
 
     return sample_problem_params, get_problem_phi, cost, mock_solution
 

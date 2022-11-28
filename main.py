@@ -79,11 +79,11 @@ class ZDecoder(eqx.Module):
 def eval(model, psi, cost, get_phi, state_dim):
     phi = get_phi(psi)
     batch_size = phi.shape[0]
-    
+
     qh = model(phi)
     qh = qh.reshape(batch_size, qh.shape[1], -1, state_dim)
-    
-    best_qs = cost(qh, psi).argmin(axis=1).squeeze()
+    c = cost(qh, psi)
+    best_qs = c.argmin(axis=1)
     best_q = qh[jnp.arange(batch_size), best_qs]
     return best_q
 
@@ -143,7 +143,7 @@ def plot_solutions(args, psi, gt, qs, path):
         axes = axes.flatten()
     else:
         axes = [axes]
-        
+
     for i, ax in enumerate(axes):
         phi = (psi[0][i], psi[1][i])
         q = qs[i]
@@ -152,7 +152,7 @@ def plot_solutions(args, psi, gt, qs, path):
   #      args.problem_inst.plot_single_problem(fig, ax, phi, gt_.reshape(1, 1, -1), 1)
 
     fig.savefig(os.path.join(path, "plots.png"))
-        
+
 def test(args, model, key):
     samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.prob_dim)
     key_sample, key_solve = jax.random.split(key)
@@ -178,7 +178,7 @@ if __name__=='__main__':
     parser = ArgumentParser()
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--problem", type=str, default="maze_1d")
-    
+
     parser.add_argument("--problem_batch_size", type=int, default=50,
             help="For each iteration how many problems to sample")
     parser.add_argument("--epochs", type=int, default=100,
@@ -209,25 +209,25 @@ if __name__=='__main__':
     parser.add_argument("--results_path", type=str, default=".")
 
     args = parser.parse_args()
-    
+
     # Simpler for now
     args.trajectory_length = args.prob_dim
-    
+
     key = jax.random.PRNGKey(args.seed)
     train_key, test_key = jax.random.split(key, 2)
-    
+
     args.problem_inst = importlib.import_module(f"problems.{args.problem}")
 
     phi_size = args.prob_dim * args.problem_inst.PHI_STATE_DIM
-    
-    in_size = args.latent_dim + phi_size    
+
+    in_size = args.latent_dim + phi_size
     out_size = args.trajectory_length * args.problem_inst.PHI_STATE_DIM
-    
+
     model = ZDecoder(args.levels, args.regions, args.latent_dim, phi_size, out_size, key=jax.random.PRNGKey(0))
 
     print_error = lambda err, std: print(f"After training: Testing error: {err}, Testing STD: {std}")
-    
-    
+
+
     test_1_key, test_2_key = jax.random.split(key)
     print_error(*test(args, model, test_1_key))
     model = train(args, model, train_key)
