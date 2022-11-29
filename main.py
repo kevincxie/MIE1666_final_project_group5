@@ -6,6 +6,7 @@ from jax import random
 import jax.numpy as jnp
 import optax
 import equinox as eqx
+import equinox.nn as nn
 import pdb
 
 import matplotlib.pyplot as plt
@@ -13,14 +14,21 @@ import seaborn as sns
 
 from argparse import ArgumentParser
 
+from typing import Callable
+from functools import partial
+
 import problems
 import svgd_utils
 
+
+
 class ZDecoder(eqx.Module):
-    weight1: jnp.ndarray
+    weight: jnp.ndarray
     weight2: jnp.ndarray
     #bias: jnp.ndarray
     region_params: jnp.ndarray
+    
+    model: nn.MLP
 
     z_size: int
     levels: int
@@ -34,12 +42,18 @@ class ZDecoder(eqx.Module):
         self.regions = regions
 
         wkey, bkey, Zkey = jax.random.split(key, num=3)
-        self.weight1 = jax.random.normal(wkey, (out_size, latent_dim))
+    #    self.weight1 = jax.random.normal(wkey, (out_size, latent_dim))
         self.weight2 = jax.random.normal(bkey, (out_size, phi_size))
-        #self.weight = jnp.ones((out_size, in_size))
+        self.weight = jnp.ones((out_size, in_size))
         #self.bias = jax.random.normal(bkey, (out_size,))
         self.region_params = jax.random.normal(Zkey, (levels, regions, self.z_size))
-
+        
+        self.model = nn.MLP(in_size, out_size, 64, 2, key=wkey)
+ 
+    @partial(jax.vmap, in_axes=(None, 0), out_axes=0)   
+    @partial(jax.vmap, in_axes=(None, 0), out_axes=0)   
+    def eval_mlp(self, x):
+        return self.model(x)
 
     def __call__(self, phi):
         phi = phi.reshape(phi.shape[0], -1) # Treat all the enviorenment parameters as one long vector..
@@ -55,9 +69,12 @@ class ZDecoder(eqx.Module):
         V_alphas = jnp.broadcast_to(V_alphas, (batch_size,)+V_alphas.shape)
 
         X = jnp.concatenate([V_alphas, phi], axis=-1) # batch, nregions*nlevels, z_size+phi_dim
-        qs = V_alphas + phi #jnp.matmul(phi, self.weight2.T)
+        #qs = V_alphas + jnp.matmul(phi, self.weight2.T)
       #  jax.debug.print("{}", phi)
         #qs = jnp.matmul(X, self.weight.T) #[batch, nregions*nlevels, q_size]
+        
+        print(X.shape)
+        qs = self.eval_mlp(X)
         #qs = V_alphas
 #        jax.debug.print("{}", V_alphas)
 
@@ -80,11 +97,11 @@ class ZDecoder(eqx.Module):
 def eval(model, psi, cost, get_phi, state_dim):
     phi = get_phi(psi)
     batch_size = phi.shape[0]
-    
+
     qh = model(phi)
     qh = qh.reshape(batch_size, qh.shape[1], -1, state_dim)
-    
-    best_qs = cost(qh, psi).argmin(axis=1).squeeze()
+    c = cost(qh, psi)
+    best_qs = c.argmin(axis=1)
     best_q = qh[jnp.arange(batch_size), best_qs]
     return best_q
 
@@ -117,7 +134,7 @@ def train(args, model, key):
         return loss, model, opt_state
 
     optim = optax.adam(optax.exponential_decay(args.lr, 10, args.decay))
-    opt_state = optim.init(model)
+    opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
     for epoch in range(args.epochs):
         #for sample in range(q_stars_mock.shape[0]):
         _, key_sample, key_solve = jax.random.split(key, 3)
@@ -149,7 +166,7 @@ def plot_solutions(args, psi, gt, qs, path):
         axes = axes.flatten()
     else:
         axes = [axes]
-        
+
     for i, ax in enumerate(axes):
         phi = (psi[0][i], psi[1][i])
         q = qs[i]
@@ -158,7 +175,7 @@ def plot_solutions(args, psi, gt, qs, path):
   #      args.problem_inst.plot_single_problem(fig, ax, phi, gt_.reshape(1, 1, -1), 1)
 
     fig.savefig(os.path.join(path, "plots.png"))
-        
+
 def test(args, model, key):
     samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.prob_dim)
     key_sample, key_solve = jax.random.split(key)
@@ -184,7 +201,7 @@ if __name__=='__main__':
     parser = ArgumentParser()
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--problem", type=str, default="maze_1d")
-    
+
     parser.add_argument("--problem_batch_size", type=int, default=50,
             help="For each iteration how many problems to sample")
     parser.add_argument("--epochs", type=int, default=100,
@@ -217,25 +234,25 @@ if __name__=='__main__':
             help="Number of particles used for SVGD")
 
     args = parser.parse_args()
-    
+
     # Simpler for now
     args.trajectory_length = args.prob_dim
-    
+
     key = jax.random.PRNGKey(args.seed)
     train_key, test_key = jax.random.split(key, 2)
-    
+
     args.problem_inst = importlib.import_module(f"problems.{args.problem}")
 
     phi_size = args.prob_dim * args.problem_inst.PHI_STATE_DIM
-    
-    in_size = args.latent_dim + phi_size    
+
+    in_size = args.latent_dim + phi_size
     out_size = args.trajectory_length * args.problem_inst.PHI_STATE_DIM
-    
+
     model = ZDecoder(args.levels, args.regions, args.latent_dim, phi_size, out_size, key=jax.random.PRNGKey(0))
 
     print_error = lambda err, std: print(f"After training: Testing error: {err}, Testing STD: {std}")
-    
-    
+
+
     test_1_key, test_2_key = jax.random.split(key)
     print_error(*test(args, model, test_1_key))
     model = train(args, model, train_key)
