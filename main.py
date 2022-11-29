@@ -14,6 +14,7 @@ import seaborn as sns
 from argparse import ArgumentParser
 
 import problems
+import svgd_utils
 
 class ZDecoder(eqx.Module):
     weight1: jnp.ndarray
@@ -123,14 +124,19 @@ def train(args, model, key):
        # key_sample = key_solve = key
         probp = samp_prob(key_sample, batch_size=args.problem_batch_size)
         phi = get_phi(probp).reshape(args.problem_batch_size, -1)
+
         q_star = mock_sol(key_solve, probp)
         q_star = q_star.reshape(args.problem_batch_size, -1)
+        svgd = svgd_utils.SVGD(model(phi), args.num_particles, args.seed)
+        q_star = svgd.optimize(epochs=100, gt=q_star, svgd_r=1)
+
         loss, model, opt_state = make_step(model, phi, q_star, opt_state)
 
         loss = loss.item()
         #losses.append(loss)
         if (epoch + 1) % 100 == 0:
             print(f"epoch={epoch+1}, loss={loss : .4f}")
+            
 
     return model
 
@@ -207,6 +213,8 @@ if __name__=='__main__':
     parser.add_argument("--decay", type=float, default=1.)
 
     parser.add_argument("--results_path", type=str, default=".")
+    parser.add_argument("--num_particles", type=int, default=100, 
+            help="Number of particles used for SVGD")
 
     args = parser.parse_args()
     
