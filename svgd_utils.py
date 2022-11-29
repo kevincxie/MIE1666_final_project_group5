@@ -32,13 +32,15 @@ class RBF():
         K_XY = jnp.exp(- gamma * dnorm2)
         
         dK_XY = jnp.zeros(qs.shape)
-
-        for i in range(n_particles):
-            dK_XY = dK_XY.at[i].set(jnp.matmul(K_XY[i], qs[i] - qs) * 2 * gamma)
-
-        pdb.set_trace()
+        dK_XY_gt = jnp.zeros(qs.shape)
+        
+        vcompute_grad = jax.vmap(self.compute_grad, in_axes=(0, 0, None, None))
+        dK_XY = vcompute_grad(K_XY, qs, qs, gamma)
      
         return K_XY, dK_XY   
+    
+    def compute_grad(self, K_XY, qs_i, qs, gamma):
+        return jnp.matmul(K_XY,  qs_i - qs) * 2 * gamma
 
 class SVGD():
     def __init__(self, qs, num_particles, seed):
