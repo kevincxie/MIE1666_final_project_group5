@@ -47,34 +47,37 @@ def make_problem(nwalls=2):
         phi_weight = jax.random.uniform(key, shape=(batch_size,nwalls,nholes_per_wall), minval=0.1, maxval=1.0)
         return (phi_shift, phi_weight)
 
-    @partial(jnp.vectorize, signature='(k,l,s,1),(l,1,r)->(k,l,s,r)')
+    @partial(jnp.vectorize, signature='(s,1),(s,r)->(s,r)')
     def gaussian_cost_1d(x, center):
         return -jnp.exp(-((x-center)*2.)**2)
 
-    @partial(vmap, in_axes=0, out_axes=0)
     def cost(q, prob_params):
         """
         Cost function computation
         Args:
-            q: (ndim) array
-            prob_params: Tuple of arrays representing problem parameters
+            q: (nwalls,)
+            prob_params: [(nwalls, ), (nwalls, nholes)]
+        Returns:
+            cost 
         """
         phi_shift, phi_weight = prob_params
         # for a single q, calculate its cost to all holes
+        # ptim.update()
 
         # Add dummy "holes" broadcast dimension to q
         q = jnp.expand_dims(q,-1)
 
         # get the shape of phi to be [batch, *, phi_dim] where * is arbitary dims in q
-        cost = gaussian_cost_1d(q, (q_holes+phi_shift[..., None])[:, None, :])
+        shifted_holes = q_holes+phi_shift[..., None]
+        
+        cost = gaussian_cost_1d(q, shifted_holes)
         # multiply each hole by weight
-        cost = cost * phi_weight[:, None, :]
+        cost = cost * phi_weight
 
         # Sum over all holes on each wall
-        return jnp.sum(cost, (-3,-2,-1))
+        return jnp.sum(cost, (-2,-1)) 
 
     # Batch over problem params
-    @partial(vmap, in_axes=(None, 0), out_axes=0)
     def mock_solution(key, prob_params):
         """
         Pretends to do VOO
@@ -87,8 +90,8 @@ def make_problem(nwalls=2):
 
         # For each wall, grab the best hole
         q_star = (q_holes + phi_shift[..., None])[jnp.arange(nwalls),best_hole]
-        return q_star[:, None]
-
+        return q_star # Return [nwalls,]
+        
     return sample_problem_params, get_problem_phi, cost, mock_solution
 
 def main():
