@@ -73,9 +73,9 @@ def make_problem(nwalls=2, connecting_steps=2):
 
         # Add dummy "holes" broadcast dimension to q
         q = jnp.expand_dims(q,-1)
-
         # get the shape of phi to be [batch, *, phi_dim] where * is arbitary dims in q
         shifted_holes = q_holes+phi_shift[..., None]
+
         
         cost = gaussian_cost_1d(q, shifted_holes)
         # multiply each hole by weight
