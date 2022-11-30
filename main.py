@@ -73,7 +73,7 @@ class ZDecoder(eqx.Module):
       #  jax.debug.print("{}", phi)
         #qs = jnp.matmul(X, self.weight.T) #[batch, nregions*nlevels, q_size]
         
-        print(X.shape)
+        # print(X.shape)
         qs = self.eval_mlp(X)
         #qs = V_alphas
 #        jax.debug.print("{}", V_alphas)
@@ -124,6 +124,16 @@ def train(args, model, key):
         loss = jnp.mean(best_qs, axis=0)
         return loss
 
+    @eqx.filter_value_and_grad
+    def compute_loss_q(qs, q_star):
+        q_fit = (qs - q_star[:, None, :])**2
+        q_fit = jnp.sum(q_fit, axis=-1)
+        # inner minimization
+        best_qs = jnp.min(q_fit, axis=1)
+        # expectation
+        loss = jnp.mean(best_qs, axis=0)
+        return loss
+
     # Important for efficiency whenever you use JAX: wrap everything into a single JIT
     # region.
     @eqx.filter_jit
@@ -132,6 +142,13 @@ def train(args, model, key):
         updates, opt_state = optim.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
         return loss, model, opt_state
+
+    @ eqx.filter_jit
+    def make_step_sgld(qs, q_star, opt_state):
+        loss, grads = compute_loss_q(qs, q_star)
+        updates, opt_state = q_optim.update(grads, opt_state)
+        qs = eqx.apply_updates(qs, updates)
+        return qs, loss, opt_state
 
     optim = optax.adam(optax.exponential_decay(args.lr, 10, args.decay))
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
@@ -142,10 +159,22 @@ def train(args, model, key):
         probp = samp_prob(key_sample, batch_size=args.problem_batch_size)
         phi = get_phi(probp).reshape(args.problem_batch_size, -1)
 
-        q_star = mock_sol(key_solve, probp)
-        q_star = q_star.reshape(args.problem_batch_size, -1)
-        svgd = svgd_utils.SVGD(model(phi), args.num_particles, args.seed)
-        q_star = svgd.optimize(epochs=100, gt=q_star, svgd_r=1)
+        if args.sgld: # SGLD
+            q_star = mock_sol(key_solve, probp)
+            q_star = q_star.reshape(args.problem_batch_size, -1)
+            qs = model(phi)
+            q_optim = optax.noisy_sgd(args.lr, eta=0.005, gamma=0.85)
+            q_opt_state = q_optim.init(qs)
+            for iter in range(500):
+                qs, loss, q_opt_state = make_step_sgld(qs, q_star, q_opt_state)
+                if (iter + 1) % 100 == 0:
+                    print(f"SGLD epoch={iter+1}, loss={loss : .4f}")
+                
+        else: # SVGD
+            q_star = mock_sol(key_solve, probp)
+            q_star = q_star.reshape(args.problem_batch_size, -1)
+            svgd = svgd_utils.SVGD(model(phi), args.num_particles, args.seed)
+            q_star = svgd.optimize(epochs=1000, gt=q_star, svgd_r=1)
 
         loss, model, opt_state = make_step(model, phi, q_star, opt_state)
 
@@ -232,6 +261,8 @@ if __name__=='__main__':
     parser.add_argument("--results_path", type=str, default=".")
     parser.add_argument("--num_particles", type=int, default=100, 
             help="Number of particles used for SVGD")
+    parser.add_argument("--sgld", type=bool, default=True,
+            help="Use sgld if true, else use svgd")
 
     args = parser.parse_args()
 
