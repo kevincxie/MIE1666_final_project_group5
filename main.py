@@ -1,6 +1,8 @@
 import os
 import importlib
 
+import numpy as np
+
 import jax
 from jax import random
 import jax.numpy as jnp
@@ -14,17 +16,15 @@ import seaborn as sns
 
 from argparse import ArgumentParser
 
-from typing import Callable
+from typing import Callable, Tuple
 from functools import partial
 
 import problems
 import svgd_utils
 
 
-
 class ZDecoder(eqx.Module):
     weight: jnp.ndarray
-    weight2: jnp.ndarray
     #bias: jnp.ndarray
     region_params: jnp.ndarray
     
@@ -33,27 +33,38 @@ class ZDecoder(eqx.Module):
     z_size: int
     levels: int
     regions: int
+    out_shape: Tuple[int]
+    identity_decoder: bool
 
-    def __init__(self, levels, regions, latent_dim, phi_size, out_size, key):
+    def __init__(self, levels, regions, latent_dim, phi_size, out_shape, key, identity_decoder=False):
         assert(levels <= latent_dim and latent_dim % levels == 0)
-
         self.z_size = latent_dim // levels
         self.levels = levels
         self.regions = regions
+        self.out_shape = tuple(out_shape)
+        self.identity_decoder = identity_decoder
 
-        wkey, bkey, Zkey = jax.random.split(key, num=3)
-    #    self.weight1 = jax.random.normal(wkey, (out_size, latent_dim))
-        self.weight2 = jax.random.normal(bkey, (out_size, phi_size))
+        wkey, Zkey = jax.random.split(key, num=2)
+     
+        in_size = latent_dim + phi_size
+        out_size = np.prod(out_shape)
         self.weight = jnp.ones((out_size, in_size))
-        #self.bias = jax.random.normal(bkey, (out_size,))
         self.region_params = jax.random.normal(Zkey, (levels, regions, self.z_size))
-        
-        self.model = nn.MLP(in_size, out_size, 64, 2, key=wkey)
+
+        if self.identity_decoder:
+            # Ignore the 
+            self.model = lambda V_alphas, phi: V_alphas
+        else:
+            self.model = nn.MLP(in_size, out_size, 64, 2, key=wkey)
  
-    @partial(jax.vmap, in_axes=(None, 0), out_axes=0)   
-    @partial(jax.vmap, in_axes=(None, 0), out_axes=0)   
-    def eval_mlp(self, x):
-        return self.model(x)
+    @partial(jax.vmap, in_axes=(None, 0, 0), out_axes=0)   
+    @partial(jax.vmap, in_axes=(None, 0, 0), out_axes=0)   
+    def eval_mlp(self, V_alphas, phi):
+        if not self.identity_decoder:
+            X = jnp.concatenate([V_alphas, phi], axis=-1) 
+            return self.model(X)
+        else:
+            return self.model(V_alphas, phi)
 
     def __call__(self, phi):
         phi = phi.reshape(phi.shape[0], -1) # Treat all the enviorenment parameters as one long vector..
@@ -63,23 +74,14 @@ class ZDecoder(eqx.Module):
 
         i = jnp.mgrid[(slice(0, regions, 1),)*levels]
         V_alphas = self.region_params[jnp.arange(levels), i.T].reshape(-1, levels*z_size)
-      #  jax.debug.print("V_alpha: {}", V_alphas)
 
         phi = jnp.broadcast_to(phi.reshape(batch_size, 1, dim), (batch_size, V_alphas.shape[0], dim))
         V_alphas = jnp.broadcast_to(V_alphas, (batch_size,)+V_alphas.shape)
 
-        X = jnp.concatenate([V_alphas, phi], axis=-1) # batch, nregions*nlevels, z_size+phi_dim
-        #qs = V_alphas + jnp.matmul(phi, self.weight2.T)
-      #  jax.debug.print("{}", phi)
-        #qs = jnp.matmul(X, self.weight.T) #[batch, nregions*nlevels, q_size]
-        
-        # print(X.shape)
-        qs = self.eval_mlp(X)
-        #qs = V_alphas
-#        jax.debug.print("{}", V_alphas)
-
-        return qs
-
+        # batch, nregions*nlevels, z_size+phi_dim
+        qs = self.eval_mlp(V_alphas, phi)
+        # unflatten
+        return qs.reshape(qs.shape[:-1]+self.out_shape)
 
 # def create_dataset(num_data, nwalls=2, batchsize=3):
 #     phi = []
@@ -143,7 +145,7 @@ def train(args, model, key):
         model = eqx.apply_updates(model, updates)
         return loss, model, opt_state
 
-    @ eqx.filter_jit
+    @eqx.filter_jit
     def make_step_sgld(qs, q_star, opt_state):
         loss, grads = compute_loss_q(qs, q_star)
         updates, opt_state = q_optim.update(grads, opt_state)
@@ -161,7 +163,7 @@ def train(args, model, key):
 
         if args.sgld: # SGLD
             q_star = mock_sol(key_solve, probp)
-            q_star = q_star.reshape(args.problem_batch_size, -1)
+            # q_star = q_star.reshape(args.problem_batch_size, -1)
             qs = model(phi)
             q_optim = optax.noisy_sgd(args.lr, eta=0.005, gamma=0.85)
             q_opt_state = q_optim.init(qs)
@@ -172,7 +174,7 @@ def train(args, model, key):
                 
         else: # SVGD
             q_star = mock_sol(key_solve, probp)
-            q_star = q_star.reshape(args.problem_batch_size, -1)
+            # q_star = q_star.reshape(args.problem_batch_size, -1)
             svgd = svgd_utils.SVGD(model(phi), args.num_particles, args.seed)
             q_star = svgd.optimize(epochs=1000, gt=q_star, svgd_r=1)
 

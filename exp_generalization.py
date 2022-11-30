@@ -22,51 +22,8 @@ from functools import partial
 import problems
 import svgd_utils
 
-class ZDecoder(eqx.Module):
-    weight: jnp.ndarray
-    #bias: jnp.ndarray
-    region_params: jnp.ndarray
-    
-    model: nn.MLP
+from main import ZDecoder
 
-    z_size: int
-    levels: int
-    regions: int
-
-    def __init__(self, levels, regions, latent_dim, phi_size, out_size, key):
-        assert(levels <= latent_dim and latent_dim % levels == 0)
-        self.z_size = latent_dim // levels
-        self.levels = levels
-        self.regions = regions
-        wkey, Zkey = jax.random.split(key, num=2)
-
-        in_size = latent_dim + phi_size
-        self.weight = jnp.ones((out_size, in_size))
-        self.region_params = jax.random.normal(Zkey, (levels, regions, self.z_size))
-        
-        self.model = nn.MLP(in_size, out_size, 64, 2, key=wkey)
- 
-    @partial(jax.vmap, in_axes=(None, 0), out_axes=0)   
-    @partial(jax.vmap, in_axes=(None, 0), out_axes=0)   
-    def eval_mlp(self, x):
-        return self.model(x)
-
-    def __call__(self, phi):
-        phi = phi.reshape(phi.shape[0], -1) # Treat all the enviorenment parameters as one long vector..
-        batch_size, dim = phi.shape
-
-        regions, levels, z_size = self.regions, self.levels, self.z_size
-
-        i = jnp.mgrid[(slice(0, regions, 1),)*levels]
-        V_alphas = self.region_params[jnp.arange(levels), i.T].reshape(-1, levels*z_size)
-
-        phi = jnp.broadcast_to(phi.reshape(batch_size, 1, dim), (batch_size, V_alphas.shape[0], dim))
-        V_alphas = jnp.broadcast_to(V_alphas, (batch_size,)+V_alphas.shape)
-
-        # batch, nregions*nlevels, z_size+phi_dim
-        X = jnp.concatenate([V_alphas, phi], axis=-1) 
-        qs = self.eval_mlp(X)
-        return qs
 
 def problem_dataloader(problems, batch_size):
     n_problems = problems[0].shape[0] # HACK
@@ -85,6 +42,7 @@ def train(args, model, key, problems_train, problems_test, verbose=True):
         problems_test: 
     """
     _, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.prob_dim)
+    mock_sol = jax.vmap(mock_sol, (None,0))
     phi_size = args.prob_dim
 
     def compute_loss(model, phi, q_star):
@@ -185,8 +143,8 @@ def eval(model, psi, cost, get_phi, state_dim):
     batch_size = phi.shape[0]
 
     qh = model(phi)
-    qh = qh.reshape(batch_size, qh.shape[1], -1, state_dim)
-    c = cost(qh, psi)
+    # qh = qh.reshape(batch_size, qh.shape[1], -1, state_dim)
+    c = jax.vmap(jax.vmap(cost, (0,None),out_axes=0),(0,0), out_axes=0)(qh, psi)
     best_qs = c.argmin(axis=1)
     best_q = qh[jnp.arange(batch_size), best_qs]
     return best_q, c[jnp.arange(batch_size),best_qs]
@@ -201,13 +159,12 @@ def test(args, model, key, problems_test):
         # phi = get_phi(test_batch_probp).reshape(test_batch_size, -1)
         # q_star = mock_sol(key_solve, test_batch_probp).reshape(test_batch_size, -1)
 
-        key_sample, key_solve = jax.random.split(key)
-        psi = samp_prob(key_sample, test_batch_size)
+        # key_sample, key_solve = jax.random.split(key)
+        # psi = samp_prob(key_sample, test_batch_size)
         # gt = mock_sol(key_solve, psi)
         # phi = get_phi(psi)
         # qs = model(phi)
-        best_q, best_q_cost = eval(model, psi, cost, get_phi, args.problem_inst.PHI_STATE_DIM)
-        print('best_q_cost', best_q_cost.shape)
+        best_q, best_q_cost = eval(model, test_batch_probp, cost, get_phi, args.problem_inst.PHI_STATE_DIM)
 
         avg_test_cost += jnp.mean(best_q_cost, axis=0).item()
         test_batch_count += 1
@@ -233,13 +190,18 @@ def get_data(args, train_data_size, test_data_size, key, cache_path=None):
         samp_prob, _, _, _ = args.problem_inst.make_problem(args.prob_dim)
         data_train_key, data_test_key = jax.random.split(key, 2)
         train_probp = samp_prob(data_train_key, batch_size=train_data_size)
-        test_probp = samp_prob(data_test_key, batch_size=train_data_size)
+        test_probp = samp_prob(data_test_key, batch_size=test_data_size)
 
         if cache_path is not None:
             raise NotImplementedError()
             with open(cache_path, 'wb') as f:
                 pickle.dump(probp, f)
     return train_probp, test_probp
+
+def get_oracle_perf(args, key, probp_test):
+    _, _, cost, mock_sol = args.problem_inst.make_problem(args.prob_dim)
+    q_oracle = jax.vmap(mock_sol,(None,0))(key, probp_test)
+    return jnp.mean(cost(q_oracle, probp_test), axis=0)
 
 def main(args):
     # Simpler for now
@@ -249,30 +211,64 @@ def main(args):
     key = jax.random.PRNGKey(args.seed)
     key, data_key = jax.random.split(key)
 
-    train_data_size = 1000
-    test_data_size = 200
+    train_data_size = 500
+    test_data_size = 2000
     probp_train, probp_test = get_data(args, train_data_size, test_data_size, data_key)
+    assert probp_train[0].shape[0] == train_data_size
+    assert probp_test[0].shape[0] == test_data_size
 
     phi_size = args.prob_dim * args.problem_inst.PHI_STATE_DIM
-    out_size = args.trajectory_length * args.problem_inst.PHI_STATE_DIM
+    out_size = (args.trajectory_length * args.problem_inst.PHI_STATE_DIM, )
+
+    # Compute oracle performance on mock solutions
+    oracle_cost = get_oracle_perf(args, key, probp_test).item()
+    print(f"Oracle cost {oracle_cost : .4f}")
+
+    def run_model_data_ablation(model_constructor, train_sizes):
+        avg_test_costs = []
+        for train_size in train_sizes:
+            # Train new model with different fraction of training data
+            # model = ZDecoder(args.levels, args.regions, args.latent_dim, phi_size, out_size, key=jax.random.PRNGKey(0))
+            model = model_constructor()
+
+            probp_train_frac = jax.tree_map(lambda x: x[:train_size], probp_train)
+            model = train(args, model, key, probp_train_frac, probp_test)
+            avg_test_cost = test(args,model, key, probp_test)
+            avg_test_costs.append(avg_test_cost)
+        return {'train_sizes':train_sizes, 'avg_test_costs': avg_test_costs}
 
     n_fracs = 10
     fracs = [(1.+i)/n_fracs for i in range(n_fracs)]
     train_sizes = [min(round(frac*train_data_size),train_data_size) for frac in fracs]
-    print(train_sizes)
-    avg_test_costs = []
-    for train_size in train_sizes:
-        # Train new model with different fraction of training data
-        model = ZDecoder(args.levels, args.regions, args.latent_dim, phi_size, out_size, key=jax.random.PRNGKey(0))
 
-        probp_train_frac = jax.tree_map(lambda x: x[:train_size], probp_train)
-        model = train(args, model, key, probp_train_frac, probp_test)
-        avg_test_cost = test(args,model, key, probp_test)
-        avg_test_costs.append(avg_test_cost)
+    perf_per_model = {}
+    # perf_per_model['oracle'] = oracle_cost
+    print('Training no_decoder')
+    perf_per_model['no_decoder'] = run_model_data_ablation(
+        lambda: ZDecoder(levels=args.prob_dim, regions=args.regions, 
+        latent_dim=args.prob_dim, phi_size=phi_size, out_shape=out_size, key=key,
+        identity_decoder=True), train_sizes)
+    print('Training full')
+    perf_per_model['full'] = run_model_data_ablation(
+        lambda: ZDecoder(levels=args.prob_dim, regions=args.regions, 
+        latent_dim=args.prob_dim, phi_size=phi_size, out_shape=out_size, key=key,
+        identity_decoder=False), train_sizes)
+    print('Training no_Z')
+    perf_per_model['no_Z'] = run_model_data_ablation(
+        lambda: ZDecoder(levels=args.prob_dim, regions=1, 
+        latent_dim=args.prob_dim, phi_size=phi_size, out_shape=out_size, key=key,
+        identity_decoder=False), train_sizes)
+        
+    print(perf_per_model)
 
-    print(train_sizes, avg_test_costs)
+
     fig, ax = plt.subplots()
-    ax.plot(train_sizes, avg_test_costs)
+    ax.set_title('Generalization Ablations')
+    ax.set_xlabel('Number of Training Samples')
+    ax.set_ylabel('Cost')
+    for model_name, perfd in perf_per_model.items():
+        ax.plot(perfd['train_sizes'], perfd['avg_test_costs'], label=model_name)
+    ax.axhline(oracle_cost, label='oracle')
     fig.savefig(os.path.join("gen_perf.png"))
         
 
@@ -282,8 +278,8 @@ def main(args):
     # model = train(args, model, train_key)
     # print_error(*test(args, model, test_2_key))
 
-    eqx.tree_serialise_leaves(os.path.join(args.results_path, "model.eqx"),
-            model)
+    # eqx.tree_serialise_leaves(os.path.join(args.results_path, "model.eqx"),
+    #         model)
 
 
 if __name__=='__main__':

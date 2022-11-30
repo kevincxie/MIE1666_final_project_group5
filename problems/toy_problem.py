@@ -86,6 +86,9 @@ def make_problem(nwalls=2):
         """
         # Get the hole for each wall with the highest weight
         phi_shift, phi_weight = prob_params
+        assert(phi_shift.ndim == 1)
+        assert(phi_weight.ndim == 2)
+
         best_hole = jnp.argmax(phi_weight, axis=-1)
 
         # For each wall, grab the best hole
