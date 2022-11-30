@@ -2,11 +2,10 @@ import numpy as np
 import os
 import json
 from lamcts import MCTS
-from toy_problem import get_toy_problem_functions
+from problems.toy_problem import make_problem, plot_single_problem
 from argparse import ArgumentParser
 import jax
-from main import plot_solutions
-from visuals import plot_single_problem
+#from main import plot_solutions
 
 class tracker:
     def __init__(self, foldername):
@@ -22,7 +21,7 @@ class tracker:
             print ("Successfully created the directory %s " % foldername)
         
     def dump_trace(self):
-        trace_path = self.foldername + '/result' + str(len( self.results) )
+        trace_path = self.foldername + str(len( self.results) )
         final_results_str = json.dumps(self.results)
         with open(trace_path, "a") as f:
             f.write(final_results_str + '\n')
@@ -47,30 +46,28 @@ class ToyProblemFunc:
             self.tracker = tracker(args.results_path)      #defined in functions.py
 
         #tunable hyper-parameters in LA-MCTS
-        self.Cp        = 1
+        self.Cp        = 10
         self.leaf_size = 10
-        self.ninits    = 10
+        self.ninits    = 40
         self.kernel_type = "rbf"
         self.gamma_type  = "auto"
 
     def __call__(self, x):
         print(x.shape, self.phi[0].shape)
         # Add dummy batch dimension
-        x = np.expand_dims(x, axis=0)
+        x = x.reshape((1,1,8,1))
         result = float(np.array(self.cost(x,self.phi)).squeeze())
-        print(result)
-        # result = (-20*np.exp(-0.2 * np.sqrt(np.inner(x,x) / x.size )) -np.exp(np.cos(2*np.pi*x).sum() /x.size) + 20 +np.e )
         self.tracker.track( result )
         return result
-    
-# f = myFunc()
 
 def main(args):
     os.makedirs(args.results_path,exist_ok=True)
-    samp_prob, get_phi, cost, mock_sol = get_toy_problem_functions(nwalls=2)
+    n_walls = 8
+    samp_prob, get_phi, cost, mock_sol = make_problem(nwalls=n_walls)
     key = jax.random.PRNGKey(args.seed)
     psi = samp_prob(key, 1)
-    f = ToyProblemFunc(cost, psi, args=args)
+    opt_cost = cost(np.expand_dims(mock_sol(None, psi),axis=0), psi)
+    f = ToyProblemFunc(cost, psi, dims=n_walls, args=args)
 
     agent = MCTS(
                 lb = f.lb,              # the lower bound of each problem dimensions
@@ -84,7 +81,7 @@ def main(args):
                 gamma_type = f.gamma_type    #SVM configruation
                 )
 
-    agent.search(iterations = 20)
+    agent.search(iterations = 100)
 
     i=0
     phi = (psi[0][i], psi[1][i])
@@ -97,9 +94,16 @@ def main(args):
     plot_single_problem(fig, ax, phi, q[None, :], q.shape[0])
     fig.savefig(os.path.join(args.results_path, "plots.png"))
 
+    fig, ax = plt.subplots()
+    ax.plot(f.tracker.results, label='LAMCTS')
+    ax.axhline(opt_cost, c='red', label='Optimal')
+    fig.savefig(os.path.join(args.results_path, "perf_plots.png"))
+
+
+
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--results_path", type=str, default="results/lamcts")
+    parser.add_argument("--results_path", type=str, default="results/lamcts/")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--rows", type=int, default=1, help="Number of columns in the plot grid")
     args = parser.parse_args()
