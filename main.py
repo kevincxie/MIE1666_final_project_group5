@@ -27,7 +27,7 @@ import ops.common
 import svgd_utils
 
 class ZDecoder(eqx.Module):
-    weight: jnp.ndarray
+#    weight: jnp.ndarray
     #bias: jnp.ndarray
     region_params: jnp.ndarray
 
@@ -42,17 +42,17 @@ class ZDecoder(eqx.Module):
     out_shape: Tuple[int]
     identity_decoder: bool
 
-    def __init__(self, levels, regions, latent_dim, phi_size, out_shape, key, identity_decoder=False):
+    def __init__(self, levels, regions, latent_dim, phi_size, out_size, key, identity_decoder=False):
         assert(levels <= latent_dim and latent_dim % levels == 0)
         self.z_size = latent_dim // levels
         self.levels = levels
         self.regions = regions
-        self.out_shape = tuple(out_shape)
+        self.out_shape = (out_size,)
         self.identity_decoder = identity_decoder
 
         wkey, bkey, Zkey = jax.random.split(key, num=3)
-        self.weight2 = jax.random.normal(bkey, (out_size, phi_size))
-        self.weight = jax.random.uniform(wkey, (out_size, in_size))
+#       self.weight2 = jax.random.normal(bkey, (out_size, phi_size))
+#       self.weight = jax.random.uniform(wkey, (out_size, in_size))
         self.region_params = jax.random.normal(Zkey, (levels, regions, self.z_size))
         self.particle_confidence = jnp.ones(regions**levels)
 
@@ -60,13 +60,15 @@ class ZDecoder(eqx.Module):
             # Ignore the
             self.model = lambda x, phi: x
         else:
-            self.model = nn.MLP(in_size, out_size, 64, 2, key=wkey)
+            self.model = nn.MLP(in_size + levels, out_size, 64, 2, key=wkey)
 
-    @partial(jax.vmap, in_axes=(None, None, 0), out_axes=0)
-    @partial(jax.vmap, in_axes=(None, 0, 0), out_axes=0)
-    @partial(jax.vmap, in_axes=(None, 0, None), out_axes=0)
-    def eval_mlp(self, x, phi):
-        return self.model(jnp.concatenate([x, phi[None]]))
+    @partial(jax.vmap, in_axes=(None, None, 0, None), out_axes=0) # Batch
+    @partial(jax.vmap, in_axes=(None, 0, None, None), out_axes=0) # r^l
+    @partial(jax.vmap, in_axes=(None, 0, None, 0), out_axes=0) # Levels
+#    @partial(jax.vmap, in_axes=(None, 0, None, None), out_axes=0) # Regions
+    def eval_mlp(self, x, phi, idx_vec):
+        print(x.shape, phi.shape, idx_vec.shape)
+        return self.model(jnp.concatenate([x, phi, idx_vec], axis=-1))
 
     @partial(jax.vmap, in_axes=(None, 0), out_axes=0)
     def build_regions(self, X):
@@ -98,10 +100,19 @@ class ZDecoder(eqx.Module):
         batch_size, dim = phi.shape
 
         # print(X.shape)
-        qs = self.eval_mlp(self.region_params, phi) # [Batch, levels, regions]
-        trajectories = self.build_regions(qs)[..., 0]
+        idx_vecs = jnp.eye(self.levels) # Batch, regions**levels, 1
 
-        return trajectories
+        zs = self.build_regions(self.region_params[None])[0]
+        print(zs.shape)
+        future = jnp.roll(zs, -1, axis=1)
+        x = jnp.concatenate([zs, future], axis=-1)
+
+        qs = self.eval_mlp(x, phi, idx_vecs) # [Batch, levels, regions, q_size]
+#        trajectories = self.build_regions(qs)
+#        trajectories = trajectories.reshape(batch_size, trajectories.shape[1], -1)
+        print(qs.shape)
+
+        return qs.reshape(batch_size, qs.shape[1], -1)
 
 def get_optimizer(args):
     opt = getattr(ops.common, args.optimizer)
@@ -112,7 +123,7 @@ def eval(model, psi, cost, get_phi, state_dim):
     batch_size = phi.shape[0]
 
     qh = model(phi)
-    qh = qh.reshape(batch_size, qh.shape[1], phi.shape[1])
+    qh = qh.reshape(batch_size, qh.shape[1], -1)
     c = jax.vmap(cost, in_axes=0, out_axes=0)(qh, psi) # [ntrajs, nwalls]
 
     best_qs = c.argmin(axis=1)
@@ -120,9 +131,9 @@ def eval(model, psi, cost, get_phi, state_dim):
     return best_q
 
 def train(args, optimizer, model, key):
-    samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.prob_dim)
-    phi_size = args.prob_dim
-    in_size, out_size = args.latent_dim + phi_size, args.prob_dim
+    samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.n_walls, args.connecting_steps)
+    phi_size = args.n_walls
+    in_size, out_size = args.latent_dim + phi_size, args.n_walls
 
     @eqx.filter_value_and_grad
     def compute_loss(model, phi, q_star, weights):
@@ -171,7 +182,8 @@ def train(args, optimizer, model, key):
         probp = samp_prob(key_sample, batch_size=args.problem_batch_size)
         phi = get_phi(probp).reshape(args.problem_batch_size, -1)
         qhat = model(phi)
-        qn = jax.random.uniform(key_solve, shape=(phi.shape[0], args.num_particles, phi.shape[1]))
+
+        qn = jax.random.uniform(key_solve, shape=(phi.shape[0], args.num_particles, phi.shape[1]*(args.connecting_steps + 1)))
         qhat = jnp.concatenate([qhat, qn], axis=1)
 
 
@@ -212,13 +224,14 @@ def plot_solutions(args, psi, gt, qs, path, connecting_steps):
         phi = (psi[0][i], psi[1][i])
         q = qs[i]
         gt_ = gt[i]
-        args.problem_inst.plot_single_problem(fig, ax, phi, q[None, :], q.shape[0], connecting_steps=connecting_steps)
+        args.problem_inst.plot_single_problem(fig, ax, phi, q[None, :], args.connecting_steps, q.shape[0])
   #      args.problem_inst.plot_single_problem(fig, ax, phi, gt_.reshape(1, 1, -1), 1)
-    args.iter += 1
+    if not args.plot_once:
+        args.iter += 1
     fig.savefig(os.path.join(path, f"results/plots{args.iter}.png"))
 
 def test(args, model, key):
-    samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.prob_dim)
+    samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.n_walls, args.connecting_steps)
     key_sample, key_solve = jax.random.split(key)
     #key_sample = key_solve = key
     psi = samp_prob(key_sample, args.test_batch_size)
@@ -241,24 +254,27 @@ def test(args, model, key):
 if __name__=='__main__':
     parser = ArgumentParser()
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
-    parser.add_argument("--problem", type=str, default="maze_1d")
+    parser.add_argument("--problem", type=str, default="toy_problem")
 
-    parser.add_argument("--problem_batch_size", type=int, default=50,
+    parser.add_argument("--problem_batch_size", type=int, default=10,
             help="For each iteration how many problems to sample")
     parser.add_argument("--epochs", type=int, default=100,
             help="Total iteration count")
 
-    parser.add_argument("--levels", type=int, default=2,
+    parser.add_argument("--levels", type=int, default=-1,
             help="Number of levels to the problem,"
             + "can't be greater than latent dimension")
     parser.add_argument("--regions", type=int, default=2,
             help="Number of voronoi regions per level")
 
-    parser.add_argument("--test_batch_size", type=int, default=4,
+    parser.add_argument("--test_batch_size", type=int, default=1,
             help="For testing how many problems to sample")
-    parser.add_argument("--latent_dim", type=int, default=2,
+    parser.add_argument("--latent_dim", type=int, default=-1,
             help="Dimensions in the latent space")
-    parser.add_argument("--prob_dim", type=int, default=2,
+
+    parser.add_argument("--connecting_steps", type=int, default=2,
+            help="Connections between walls")
+    parser.add_argument("--n_walls", type=int, default=2,
             help="Number of dimensions in the problem," +
             "corresponds to the number of walls")
 
@@ -272,21 +288,28 @@ if __name__=='__main__':
 
     parser.add_argument("--results_path", type=str, default=".")
 
-    subparsers = parser.add_argument("--optimizer", type=str, default='mock')
+    subparsers = parser.add_argument("--optimizer", type=str, default='sgld')
 
-    parser.add_argument("--num_particles", type=int, default=100,
+    parser.add_argument("--num_particles", type=int, default=50,
             help="Number of particles used for SVGD")
 
     parser.add_argument("--iterations", type=int, default=1000)
-    parser.add_argument("--gamma", type=float, default=0.55)
-    parser.add_argument("--eta", type=float, default=0.001)
+    parser.add_argument("--gamma", type=float, default=0.75)
+    parser.add_argument("--eta", type=float, default=0.01)
 
-    parser.add_argument("--optim-step-size", type=float, default=0.1)
+    parser.add_argument("--optim-step-size", type=float, default=0.01)
+
+    parser.add_argument("--plot-once", action='store_true', default=True)
 
     args = parser.parse_args()
 
-    # Simpler for now
-    args.trajectory_length = args.prob_dim
+    if args.latent_dim < 0:
+        args.latent_dim = args.n_walls
+
+    if args.levels < 0:
+        args.levels = args.n_walls
+
+    args.trajectory_length = args.n_walls + args.connecting_steps * args.n_walls
 
     key = jax.random.PRNGKey(args.seed)
     model_key, train_key, test_key = jax.random.split(key, 3)
@@ -294,10 +317,10 @@ if __name__=='__main__':
     args.problem_inst = importlib.import_module(f"problems.{args.problem}")
     args.iter = 0
 
-    phi_size = args.prob_dim * args.problem_inst.PHI_STATE_DIM
+    phi_size = args.n_walls * args.problem_inst.PHI_STATE_DIM
 
-    in_size = args.latent_dim // args.levels + phi_size // args.levels
-    out_size = args.problem_inst.PHI_STATE_DIM
+    in_size = 2*args.latent_dim // args.levels + phi_size #// args.levels
+    out_size = args.trajectory_length // args.n_walls
 
     model = ZDecoder(args.levels, args.regions, args.latent_dim, phi_size, out_size, key=model_key)
 

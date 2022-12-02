@@ -9,8 +9,8 @@ PHI_STATE_DIM = 1 # Size of the problem desc per dimension
 
 from .visuals import plot_background, plot_solution
 
-def plot_single_problem(fig, ax, phi, soln, modes=0, connecting_steps=0):
-    plot_background(fig, ax, phi, phi[0].shape[0], phi[1].shape[1], 
+def plot_single_problem(fig, ax, phi, soln, connecting_steps=0, modes=0):
+    plot_background(fig, ax, phi, phi[0].shape[0], phi[1].shape[1],
         connecting_steps=connecting_steps, wall_width_pct=0.25, wall_height_pct=0.7)
     ax.set_xlim(-1, 1)
     ax.set_ylim(-1, 1)
@@ -28,7 +28,7 @@ def make_problem(nwalls=2, connecting_steps=2):
     # This is [nwalls, nholes_per_wall]
     q_holes = jnp.array([[-1.,1.]]*nwalls)
     nholes_per_wall = 2
-    traj_length = nwalls + connecting_steps * (nwalls-1)
+    traj_length = nwalls + connecting_steps * (nwalls)
     wall_indices = jnp.arange(0,traj_length,connecting_steps+1)
 
     def get_problem_phi(params):
@@ -63,26 +63,29 @@ def make_problem(nwalls=2, connecting_steps=2):
             q: (traj_length,)
             prob_params: [(nwalls, ), (nwalls, nholes)]
         Returns:
-            cost 
+            cost
         """
         # assert q.ndim == 1
-        q = q[..., wall_indices]
+        q_ = q[..., wall_indices]
         phi_shift, phi_weight = prob_params
         # for a single q, calculate its cost to all holes
         # ptim.update()
 
         # Add dummy "holes" broadcast dimension to q
-        q = jnp.expand_dims(q,-1)
+        q_ = jnp.expand_dims(q_,-1)
         # get the shape of phi to be [batch, *, phi_dim] where * is arbitary dims in q
         shifted_holes = q_holes+phi_shift[..., None]
 
-        
-        cost = gaussian_cost_1d(q, shifted_holes)
+
+        cost = gaussian_cost_1d(q_, shifted_holes)
         # multiply each hole by weight
         cost = cost * phi_weight
 
+        laplacian = (jnp.diff(q, 2)**2)
+#        laplacian = laplacian.at[wall_indices].set(0)
+
         # Sum over all holes on each wall
-        return jnp.sum(cost, (-2,-1)) 
+        return jnp.sum(cost, (-2,-1)) + laplacian.sum()
 
     # Batch over problem params
     def mock_solution(key, prob_params):
@@ -108,7 +111,7 @@ def make_problem(nwalls=2, connecting_steps=2):
             q_star = q_star_interp
 
         return q_star # Return [nwalls,]
-        
+
     return sample_problem_params, get_problem_phi, cost, mock_solution
 
 def main():

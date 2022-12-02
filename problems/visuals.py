@@ -45,7 +45,7 @@ def plot_background(fig : plt.Figure, ax : plt.Axes,
                     wall_width_pct : Optional[float]=0.1,
                     wall_height_pct : Optional[float]=0.3):
 
-    traj_length = n_walls + connecting_steps * (n_walls-1)
+    traj_length = n_walls + connecting_steps * (n_walls)
     wall_indices = jnp.arange(0,traj_length,connecting_steps+1)
 
     # wall_horizontal_spacing = (x_lim[1] - x_lim[0]) / (n_walls + 1)
