@@ -8,8 +8,9 @@ from visuals import plot_background, plot_solution
 
 PHI_STATE_DIM = 1 # Size of the problem desc per dimension
 
-def plot_single_problem(fig, ax, phi, soln, modes=0):
-    plot_background(fig, ax, phi, phi[0].shape[0], phi[1].shape[1], wall_width_pct=0.25, wall_height_pct=0.7)
+def plot_single_problem(fig, ax, phi, soln, connecting_steps=0, modes=0):
+    plot_background(fig, ax, phi, phi[0].shape[0], phi[1].shape[1], 
+        connecting_steps=connecting_steps, wall_width_pct=0.25, wall_height_pct=0.7)
     ax.set_xlim(-1, 1)
     ax.set_ylim(-1, 1)
 
@@ -27,7 +28,7 @@ def make_problem(nwalls=2, connecting_steps=2):
     q_holes = jnp.array([[-1.,1.]]*nwalls)
     nholes_per_wall = 2
     traj_length = nwalls + connecting_steps * (nwalls-1)
-    wall_indices = jnp.arange(0,traj_length+1,connecting_steps+1)
+    wall_indices = jnp.arange(0,traj_length,connecting_steps+1)
 
     def get_problem_phi(params):
         """
@@ -98,18 +99,25 @@ def make_problem(nwalls=2, connecting_steps=2):
         # For each wall, grab the best hole
         q_star = (q_holes + phi_shift[..., None])[jnp.arange(nwalls),best_hole]
 
+        print(q_star)
         # Now interpolate the rest of the points
         if connecting_steps > 0:
-            q_star = jnp.interp(jnp.arange(traj_length).astype(jnp.float32),
+            q_star_interp = jnp.interp(jnp.arange(traj_length).astype(jnp.float32),
                 wall_indices.astype(jnp.float32), q_star)
+            print(jnp.arange(traj_length).astype(jnp.float32))
+            print(wall_indices.astype(jnp.float32))
+            print(q_star_interp[wall_indices])
+            q_star = q_star_interp
 
         return q_star # Return [nwalls,]
         
     return sample_problem_params, get_problem_phi, cost, mock_solution
 
 def main():
+
+    connecting_steps = 1
     samp_prob, get_phi, cost, mock_sol = \
-        make_problem(nwalls=2, connecting_steps=2)
+        make_problem(nwalls=8, connecting_steps=connecting_steps)
 
     key = jax.random.PRNGKey(2)
     probp = jax.tree_map(lambda x: x[0], samp_prob(key, 1))
@@ -117,8 +125,8 @@ def main():
 
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots()
-    plot_single_problem(fig, ax, probp, q_star[None, :])
-    fig.savefig("viz_connected_steps.png")
+    plot_single_problem(fig, ax, probp, q_star[None, :], connecting_steps=connecting_steps)
+    fig.savefig("viz_connected_steps1.png")
 
 
     return

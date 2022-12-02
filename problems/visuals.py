@@ -38,19 +38,25 @@ def __paint_wall(x_loc : float, n_holes : int, y_min : float,
 def plot_background(fig : plt.Figure, ax : plt.Axes,
                     psi : Tuple[DeviceArray, DeviceArray],
                     n_walls : int, n_holes : int,
+                    connecting_steps=0,
                     wall_color : Union[Tuple[int, int, int], int]=127,
                     x_lim : Optional[Tuple[float]]=(-1., 1.),
                     y_lim : Optional[Tuple[float]]=(-1., 1.),
                     wall_width_pct : Optional[float]=0.1,
                     wall_height_pct : Optional[float]=0.3):
 
-    wall_horizontal_spacing = (x_lim[1] - x_lim[0]) / (n_walls + 1)
+    traj_length = n_walls + connecting_steps * (n_walls-1)
+    wall_indices = jnp.arange(0,traj_length,connecting_steps+1)
+
+    # wall_horizontal_spacing = (x_lim[1] - x_lim[0]) / (n_walls + 1)
+    wall_horizontal_spacing = (x_lim[1] - x_lim[0]) / (traj_length + 1)
     wall_vertical_spacing = (y_lim[1] - y_lim[0]) / (n_holes + 1)
+    print("horiz", wall_horizontal_spacing, wall_vertical_spacing)
 
     phi, weight = psi
 
     wall_patches = [
-            __paint_wall(x_lim[0] + (i+1)*wall_horizontal_spacing,
+            __paint_wall(x_lim[0] + (wall_idx+1)*wall_horizontal_spacing,
                          n_holes,
                          y_lim[0],
                          y_lim[1],
@@ -58,7 +64,7 @@ def plot_background(fig : plt.Figure, ax : plt.Axes,
                          weight[i],
                          wall_width_pct * wall_horizontal_spacing,
                          wall_height_pct * wall_vertical_spacing)
-            for i in range(n_walls)
+            for i, wall_idx in enumerate(wall_indices)
     ]
 
     for patch in wall_patches:
