@@ -68,7 +68,7 @@ def plot_background(fig : plt.Figure, ax : plt.Axes,
     return fig, ax
 
 
-def plot_solution(ax : plt.Axes, soln : DeviceArray, marker='x', line_style='-', **kwargs):
+def plot_solution(ax : plt.Axes, soln : DeviceArray, marker='o', line_style='-', **kwargs):
     xmin, xmax = ax.get_xlim()
     ymin, ymax = ax.get_ylim()
     scale = DEFAULT_SCENE_HEIGHT / (ymax - ymin)

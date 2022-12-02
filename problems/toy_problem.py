@@ -4,27 +4,30 @@ import jax.numpy as jnp
 from jax import vmap
 from functools import partial
 
-from .visuals import plot_background, plot_solution
-import problems
+from visuals import plot_background, plot_solution
 
 PHI_STATE_DIM = 1 # Size of the problem desc per dimension
 
-def plot_single_problem(fig, ax, phi, soln, modes):
+def plot_single_problem(fig, ax, phi, soln, modes=0):
     plot_background(fig, ax, phi, phi[0].shape[0], phi[1].shape[1], wall_width_pct=0.25, wall_height_pct=0.7)
     ax.set_xlim(-1, 1)
     ax.set_ylim(-1, 1)
 
+    if modes == 0:
+        plot_solution(ax, soln)
     for i in range(modes):
         plot_solution(ax, soln[:, i, :])
 
     ax.tick_params(which='both', bottom=False, top=False, labelbottom=False, labelleft=False)
 
-def make_problem(nwalls=2):
+def make_problem(nwalls=2, connecting_steps=2):
     # Represents ndim walls, each with 2 holes, q is ndim long and each dim
     # corresponds to a wall
     # This is [nwalls, nholes_per_wall]
     q_holes = jnp.array([[-1.,1.]]*nwalls)
     nholes_per_wall = 2
+    traj_length = nwalls + connecting_steps * (nwalls-1)
+    wall_indices = jnp.arange(0,traj_length+1,connecting_steps+1)
 
     def get_problem_phi(params):
         """
@@ -55,11 +58,12 @@ def make_problem(nwalls=2):
         """
         Cost function computation
         Args:
-            q: (nwalls,)
+            q: (traj_length,)
             prob_params: [(nwalls, ), (nwalls, nholes)]
         Returns:
             cost 
         """
+        q = q[wall_indices]
         phi_shift, phi_weight = prob_params
         # for a single q, calculate its cost to all holes
         # ptim.update()
@@ -93,12 +97,31 @@ def make_problem(nwalls=2):
 
         # For each wall, grab the best hole
         q_star = (q_holes + phi_shift[..., None])[jnp.arange(nwalls),best_hole]
+
+        # Now interpolate the rest of the points
+        if connecting_steps > 0:
+            q_star = jnp.interp(jnp.arange(traj_length).astype(jnp.float32),
+                wall_indices.astype(jnp.float32), q_star)
+
         return q_star # Return [nwalls,]
         
     return sample_problem_params, get_problem_phi, cost, mock_solution
 
 def main():
+    samp_prob, get_phi, cost, mock_sol = \
+        make_problem(nwalls=2, connecting_steps=2)
+
+    key = jax.random.PRNGKey(2)
+    probp = jax.tree_map(lambda x: x[0], samp_prob(key, 1))
+    q_star = mock_sol(key, probp)
+
     import matplotlib.pyplot as plt
+    fig, ax = plt.subplots()
+    plot_single_problem(fig, ax, probp, q_star[None, :])
+    fig.savefig("viz_connected_steps.png")
+
+
+    return
     nwalls = 2
     samp_prob, get_phi, cost, mock_sol = \
         get_toy_problem_functions(nwalls=nwalls)
