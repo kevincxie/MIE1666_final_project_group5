@@ -4,9 +4,10 @@ import jax.numpy as jnp
 from jax import vmap
 from functools import partial
 
-from visuals import plot_background, plot_solution
 
 PHI_STATE_DIM = 1 # Size of the problem desc per dimension
+
+from .visuals import plot_background, plot_solution
 
 def plot_single_problem(fig, ax, phi, soln, connecting_steps=0, modes=0):
     plot_background(fig, ax, phi, phi[0].shape[0], phi[1].shape[1], 
@@ -64,7 +65,8 @@ def make_problem(nwalls=2, connecting_steps=2):
         Returns:
             cost 
         """
-        q = q[wall_indices]
+        # assert q.ndim == 1
+        q = q[..., wall_indices]
         phi_shift, phi_weight = prob_params
         # for a single q, calculate its cost to all holes
         # ptim.update()
@@ -99,14 +101,10 @@ def make_problem(nwalls=2, connecting_steps=2):
         # For each wall, grab the best hole
         q_star = (q_holes + phi_shift[..., None])[jnp.arange(nwalls),best_hole]
 
-        print(q_star)
         # Now interpolate the rest of the points
         if connecting_steps > 0:
             q_star_interp = jnp.interp(jnp.arange(traj_length).astype(jnp.float32),
                 wall_indices.astype(jnp.float32), q_star)
-            print(jnp.arange(traj_length).astype(jnp.float32))
-            print(wall_indices.astype(jnp.float32))
-            print(q_star_interp[wall_indices])
             q_star = q_star_interp
 
         return q_star # Return [nwalls,]
@@ -124,6 +122,7 @@ def main():
     q_star = mock_sol(key, probp)
 
     import matplotlib.pyplot as plt
+    from visuals import plot_background, plot_solution
     fig, ax = plt.subplots()
     plot_single_problem(fig, ax, probp, q_star[None, :], connecting_steps=connecting_steps)
     fig.savefig("viz_connected_steps1.png")

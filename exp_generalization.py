@@ -23,6 +23,7 @@ import problems
 import svgd_utils
 
 from main import ZDecoder
+from main import plot_solutions
 
 
 def problem_dataloader(problems, batch_size):
@@ -41,9 +42,9 @@ def train(args, model, key, problems_train, problems_test, verbose=True):
         problems_train: tuple of all training batched problem params
         problems_test: 
     """
-    _, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.prob_dim)
+    _, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.n_walls, args.connecting_steps)
     mock_sol = jax.vmap(mock_sol, (None,0))
-    phi_size = args.prob_dim
+    phi_size = args.n_walls
 
     def compute_loss(model, phi, q_star):
         qs = model(phi)
@@ -150,7 +151,7 @@ def eval(model, psi, cost, get_phi, state_dim):
     return best_q, c[jnp.arange(batch_size),best_qs]
 
 def test(args, model, key, problems_test):
-    samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.prob_dim)
+    samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.n_walls, args.connecting_steps)
     test_batch_size = args.test_batch_size
     test_batch_count = 0
     avg_test_cost = 0. # TODO
@@ -187,7 +188,7 @@ def get_data(args, train_data_size, test_data_size, key, cache_path=None):
     if cache_path is not None and os.path.exists(cache_path):
         raise NotImplementedError()
     else:
-        samp_prob, _, _, _ = args.problem_inst.make_problem(args.prob_dim)
+        samp_prob, _, _, _ = args.problem_inst.make_problem(args.n_walls, args.connecting_steps)
         data_train_key, data_test_key = jax.random.split(key, 2)
         train_probp = samp_prob(data_train_key, batch_size=train_data_size)
         test_probp = samp_prob(data_test_key, batch_size=test_data_size)
@@ -199,17 +200,23 @@ def get_data(args, train_data_size, test_data_size, key, cache_path=None):
     return train_probp, test_probp
 
 def get_oracle_perf(args, key, probp_test):
-    _, _, cost, mock_sol = args.problem_inst.make_problem(args.prob_dim)
+    _, _, cost, mock_sol = args.problem_inst.make_problem(args.n_walls, args.connecting_steps)
     q_oracle = jax.vmap(mock_sol,(None,0))(key, probp_test)
+    print(q_oracle.shape)
     return jnp.mean(cost(q_oracle, probp_test), axis=0)
 
 def main(args):
     # Simpler for now
-    args.trajectory_length = args.prob_dim
+    args.n_walls = args.n_walls
     args.problem_inst = importlib.import_module(f"problems.{args.problem}")
+
+    # HACK: hard_coding this
+    args.connecting_steps = 1
+    args.trajectory_length = args.n_walls + args.connecting_steps * (args.n_walls-1)
 
     key = jax.random.PRNGKey(args.seed)
     key, data_key = jax.random.split(key)
+
 
     train_data_size = 500
     test_data_size = 2000
@@ -217,7 +224,7 @@ def main(args):
     assert probp_train[0].shape[0] == train_data_size
     assert probp_test[0].shape[0] == test_data_size
 
-    phi_size = args.prob_dim * args.problem_inst.PHI_STATE_DIM
+    phi_size = args.n_walls * args.problem_inst.PHI_STATE_DIM
     out_size = (args.trajectory_length * args.problem_inst.PHI_STATE_DIM, )
 
     # Compute oracle performance on mock solutions
@@ -244,19 +251,20 @@ def main(args):
     perf_per_model = {}
     # perf_per_model['oracle'] = oracle_cost
     print('Training no_decoder')
-    perf_per_model['no_decoder'] = run_model_data_ablation(
-        lambda: ZDecoder(levels=args.prob_dim, regions=args.regions, 
-        latent_dim=args.prob_dim, phi_size=phi_size, out_shape=out_size, key=key,
-        identity_decoder=True), train_sizes)
+    if args.connecting_steps == 0:
+        perf_per_model['no_decoder'] = run_model_data_ablation(
+            lambda: ZDecoder(levels=args.n_walls, regions=args.regions, 
+            latent_dim=args.n_walls, phi_size=phi_size, out_shape=out_size, key=key,
+            identity_decoder=True), train_sizes)
     print('Training full')
     perf_per_model['full'] = run_model_data_ablation(
-        lambda: ZDecoder(levels=args.prob_dim, regions=args.regions, 
-        latent_dim=args.prob_dim, phi_size=phi_size, out_shape=out_size, key=key,
+        lambda: ZDecoder(levels=args.n_walls, regions=args.regions, 
+        latent_dim=args.n_walls, phi_size=phi_size, out_shape=out_size, key=key,
         identity_decoder=False), train_sizes)
     print('Training no_Z')
     perf_per_model['no_Z'] = run_model_data_ablation(
-        lambda: ZDecoder(levels=args.prob_dim, regions=1, 
-        latent_dim=args.prob_dim, phi_size=phi_size, out_shape=out_size, key=key,
+        lambda: ZDecoder(levels=args.n_walls, regions=1, 
+        latent_dim=args.n_walls, phi_size=phi_size, out_shape=out_size, key=key,
         identity_decoder=False), train_sizes)
         
     print(perf_per_model)
@@ -278,7 +286,6 @@ def main(args):
     # print_error(*test(args, model, test_1_key))
     # model = train(args, model, train_key)
     # print_error(*test(args, model, test_2_key))
-)
     # eqx.tree_serialise_leaves(os.path.join(args.results_path, "model.eqx"),
     #         model)
 
@@ -293,17 +300,17 @@ if __name__=='__main__':
     parser.add_argument("--epochs", type=int, default=100,
             help="Total iteration count")
 
-    parser.add_argument("--levels", type=int, default=8,
-            help="Number of levels to the problem,"
-            + "can't be greater than latent dimension")
+    # parser.add_argument("--levels", type=int, default=8,
+    #         help="Number of levels to the problem,"
+    #         + "can't be greater than latent dimension")
     parser.add_argument("--regions", type=int, default=2,
             help="Number of voronoi regions per level")
 
     parser.add_argument("--test_batch_size", type=int, default=1000,
             help="For testing how many problems to sample")
-    parser.add_argument("--latent_dim", type=int, default=8,
-            help="Dimensions in the latent space")
-    parser.add_argument("--prob_dim", type=int, default=8,
+    # parser.add_argument("--latent_dim", type=int, default=8,
+    #         help="Dimensions in the latent space")
+    parser.add_argument("--n_walls", type=int, default=8,
             help="Number of dimensions in the problem," +
             "corresponds to the number of walls")
 
