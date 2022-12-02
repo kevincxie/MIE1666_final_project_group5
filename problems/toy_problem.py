@@ -9,7 +9,7 @@ PHI_STATE_DIM = 1 # Size of the problem desc per dimension
 
 from .visuals import plot_background, plot_solution
 
-def plot_single_problem(fig, ax, phi, soln, connecting_steps=0, modes=0):
+def plot_single_problem(fig, ax, phi, soln, modes=0, connecting_steps=0):
     plot_background(fig, ax, phi, phi[0].shape[0], phi[1].shape[1], 
         connecting_steps=connecting_steps, wall_width_pct=0.25, wall_height_pct=0.7)
     ax.set_xlim(-1, 1)

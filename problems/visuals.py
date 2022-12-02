@@ -51,7 +51,7 @@ def plot_background(fig : plt.Figure, ax : plt.Axes,
     # wall_horizontal_spacing = (x_lim[1] - x_lim[0]) / (n_walls + 1)
     wall_horizontal_spacing = (x_lim[1] - x_lim[0]) / (traj_length + 1)
     wall_vertical_spacing = (y_lim[1] - y_lim[0]) / (n_holes + 1)
-    print("horiz", wall_horizontal_spacing, wall_vertical_spacing)
+    # print("horiz", wall_horizontal_spacing, wall_vertical_spacing)
 
     phi, weight = psi
 

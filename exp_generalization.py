@@ -177,6 +177,24 @@ def test(args, model, key, problems_test):
     # mean_error = jnp.mean(err)
     # std_dev = jnp.std(err)
 
+    if args.plot:
+        psi = samp_prob(key, 1)
+        gt = jax.vmap(mock_sol, (None,0))(key, test_batch_probp)[0]
+        # phi = get_phi(psi)
+        # qs = model(phi)
+        q_star = best_q[0]
+        print(q_star.shape)
+        os.makedirs(args.results_path, exist_ok=True)
+        # plot_solutions(args, psi, gt, qs[0], args.results_path, args.connecting_steps)
+
+        fig, ax = plt.subplots()
+        plot_single_problem = args.problem_inst.plot_single_problem
+
+        probp = jax.tree_map(lambda x: x[0], test_batch_probp)
+        plot_single_problem(fig, ax, probp, q_star[None, :], connecting_steps=args.connecting_steps)
+        plot_single_problem(fig, ax, probp, gt[None, :], connecting_steps=args.connecting_steps)
+        fig.savefig(os.path.join(args.results_path, 'viz_best.png'))
+
     # if args.plot:
     #     raise NotImplementedError()
     #     plot_solutions(args, psi, gt, qs, args.results_path)
@@ -257,10 +275,13 @@ def main(args):
             latent_dim=args.n_walls, phi_size=phi_size, out_shape=out_size, key=key,
             identity_decoder=True), train_sizes)
     print('Training full')
+    args.plot = True
+    args.results_path = 'gen_perf_traj_full'
     perf_per_model['full'] = run_model_data_ablation(
         lambda: ZDecoder(levels=args.n_walls, regions=args.regions, 
         latent_dim=args.n_walls, phi_size=phi_size, out_shape=out_size, key=key,
         identity_decoder=False), train_sizes)
+    args.plot = False
     print('Training no_Z')
     perf_per_model['no_Z'] = run_model_data_ablation(
         lambda: ZDecoder(levels=args.n_walls, regions=1, 

@@ -189,7 +189,7 @@ def train(args, model, key):
     return model
 
 
-def plot_solutions(args, psi, gt, qs, path):
+def plot_solutions(args, psi, gt, qs, path, connecting_steps):
     sns.set_style('whitegrid')
     batches = qs.shape[0]
     fig, axes = plt.subplots(args.rows, batches // args.rows, figsize=(args.plot_width, args.plot_height))
@@ -202,7 +202,7 @@ def plot_solutions(args, psi, gt, qs, path):
         phi = (psi[0][i], psi[1][i])
         q = qs[i]
         gt_ = gt[i]
-        args.problem_inst.plot_single_problem(fig, ax, phi, q[None, :], q.shape[0])
+        args.problem_inst.plot_single_problem(fig, ax, phi, q[None, :], q.shape[0], connecting_steps=connecting_steps)
   #      args.problem_inst.plot_single_problem(fig, ax, phi, gt_.reshape(1, 1, -1), 1)
 
     fig.savefig(os.path.join(path, "plots.png"))
