@@ -263,12 +263,13 @@ def main(args):
 
 
     fig, ax = plt.subplots()
-    ax.set_title('Generalization Ablations')
+    ax.set_title('Generalization Performance Ablations')
     ax.set_xlabel('Number of Training Samples')
     ax.set_ylabel('Cost')
     for model_name, perfd in perf_per_model.items():
         ax.plot(perfd['train_sizes'], perfd['avg_test_costs'], label=model_name)
-    ax.axhline(oracle_cost, label='oracle')
+    ax.axhline(oracle_cost, label='oracle', c='red')
+    ax.legend()
     fig.savefig(os.path.join("gen_perf.png"))
         
 
@@ -277,7 +278,7 @@ def main(args):
     # print_error(*test(args, model, test_1_key))
     # model = train(args, model, train_key)
     # print_error(*test(args, model, test_2_key))
-
+)
     # eqx.tree_serialise_leaves(os.path.join(args.results_path, "model.eqx"),
     #         model)
 
