@@ -67,7 +67,6 @@ class ZDecoder(eqx.Module):
     @partial(jax.vmap, in_axes=(None, 0, None, 0), out_axes=0) # Levels
 #    @partial(jax.vmap, in_axes=(None, 0, None, None), out_axes=0) # Regions
     def eval_mlp(self, x, phi, idx_vec):
-        print(x.shape, phi.shape, idx_vec.shape)
         return self.model(jnp.concatenate([x, phi, idx_vec], axis=-1))
 
     @partial(jax.vmap, in_axes=(None, 0), out_axes=0)
@@ -103,14 +102,12 @@ class ZDecoder(eqx.Module):
         idx_vecs = jnp.eye(self.levels) # Batch, regions**levels, 1
 
         zs = self.build_regions(self.region_params[None])[0]
-        print(zs.shape)
         future = jnp.roll(zs, -1, axis=1)
         x = jnp.concatenate([zs, future], axis=-1)
 
         qs = self.eval_mlp(x, phi, idx_vecs) # [Batch, levels, regions, q_size]
 #        trajectories = self.build_regions(qs)
 #        trajectories = trajectories.reshape(batch_size, trajectories.shape[1], -1)
-        print(qs.shape)
 
         return qs.reshape(batch_size, qs.shape[1], -1)
 
@@ -211,7 +208,7 @@ def train(args, optimizer, model, key):
     return model
 
 
-def plot_solutions(args, psi, gt, qs, path, connecting_steps):
+def plot_solutions(args, psi, gt, qs, path):
     sns.set_style('whitegrid')
     batches = qs.shape[0]
     fig, axes = plt.subplots(args.rows, batches // args.rows, figsize=(args.plot_width, args.plot_height))
