@@ -42,7 +42,7 @@ def plot_background(fig : plt.Figure, ax : plt.Axes,
                     wall_color : Union[Tuple[int, int, int], int]=127,
                     x_lim : Optional[Tuple[float]]=(-1., 1.),
                     y_lim : Optional[Tuple[float]]=(-1., 1.),
-                    wall_width_pct : Optional[float]=0.1,
+                    wall_width_pct : Optional[float]=10.,
                     wall_height_pct : Optional[float]=0.3):
 
     traj_length = n_walls + connecting_steps * (n_walls)
@@ -79,22 +79,24 @@ def plot_solution(ax : plt.Axes, soln : DeviceArray, marker='o', line_style='-',
     ymin, ymax = ax.get_ylim()
     scale = DEFAULT_SCENE_HEIGHT / (ymax - ymin)
     n_walls = soln.shape[-1]
-    wall_horizontal_spacing = (xmax - xmin) / (n_walls + 1)
+    wall_horizontal_spacing = (xmax - xmin) / (n_walls)
 
-    x_ = (np.arange(n_walls) + 1) * wall_horizontal_spacing + xmin
+    x_ = (np.arange(n_walls)+1) * wall_horizontal_spacing + xmin
+#    print(x_)
     x = np.repeat(x_, soln.shape[0])
     y = soln.reshape(-1)
 
-    y *= 1. / scale
-    ax.scatter(x, y, marker=marker, **kwargs)
+  #  y = np.concatenate([y, np.zeros((1,))])
 
-    x = np.concatenate([-np.ones((1,)), x, np.ones((1,))])
-    y = np.concatenate([np.zeros((1,)), y, np.zeros((1,))])
-    
-    f = interp.interp1d(x, y, 'linear')
-    x_sm = np.linspace(-1, 1, 100)
-    y_sm = f(x_sm)
-    ax.plot(x_sm, y_sm, linestyle=line_style, **kwargs)
-    
+    y *= 1. / scale
+#    ax.scatter(x, y, marker=marker, **kwargs)
+
+#    x = np.concatenate([-np.ones((1,)), x, np.ones((1,))])
+
+#   f = interp.interp1d(x, y, 'linear')
+#   x_sm = np.linspace(xmin + wall_horizontal_spacing, xmax, 100)
+#   y_sm = f(x_sm)
+    ax.plot(x, y, linestyle=line_style, **kwargs)
+
     return ax
 

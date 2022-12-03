@@ -296,7 +296,7 @@ if __name__=='__main__':
 
     parser.add_argument("--optim-step-size", type=float, default=0.01)
 
-    parser.add_argument("--plot-once", action='store_true', default=True)
+    parser.add_argument("--plot-once", action='store_true', default=False)
 
     args = parser.parse_args()
 

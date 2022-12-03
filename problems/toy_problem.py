@@ -11,7 +11,7 @@ from .visuals import plot_background, plot_solution
 
 def plot_single_problem(fig, ax, phi, soln, connecting_steps=0, modes=0):
     plot_background(fig, ax, phi, phi[0].shape[0], phi[1].shape[1],
-        connecting_steps=connecting_steps, wall_width_pct=0.25, wall_height_pct=0.7)
+        connecting_steps=connecting_steps, wall_width_pct=2, wall_height_pct=0.8)
     ax.set_xlim(-1, 1)
     ax.set_ylim(-1, 1)
 
