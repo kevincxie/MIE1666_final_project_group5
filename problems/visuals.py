@@ -86,10 +86,11 @@ def plot_solution(ax : plt.Axes, soln : DeviceArray, marker='o', line_style='-',
     x = np.repeat(x_, soln.shape[0])
     y = soln.reshape(-1)
 
-  #  y = np.concatenate([y, np.zeros((1,))])
+    x = np.concatenate([-1.5*np.ones((1,)), x, np.ones((1,))])
+    y = np.concatenate([np.zeros((1,)), y, np.zeros((1,))])
 
     y *= 1. / scale
-#    ax.scatter(x, y, marker=marker, **kwargs)
+    ax.scatter(x, y, marker=marker, **kwargs)
 
 #    x = np.concatenate([-np.ones((1,)), x, np.ones((1,))])
 

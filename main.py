@@ -111,23 +111,40 @@ class ZDecoder(eqx.Module):
 
         return qs.reshape(batch_size, qs.shape[1], -1)
 
-def get_optimizer(args):
+def get_optimizer(args, iterations):
     opt = getattr(ops.common, args.optimizer)
-    return opt(args.optim_step_size, **vars(args))
+    return opt(args.optim_step_size, iterations, **vars(args))
 
-def eval(model, psi, cost, get_phi, state_dim):
+def optimize_fn(optimizer, key, cost):
+    @partial(jax.vmap, in_axes=0, out_axes=0)
+    @jax.jit
+    def optimize(x, psi):
+        q_star, c, _ = optimizer(key, None, lambda xh: cost(xh, psi), x)
+        return q_star, c
+
+    return optimize
+
+def eval(model, psi, cost, get_phi, state_dim, key, optimizer=None):
     phi = get_phi(psi)
     batch_size = phi.shape[0]
 
     qh = model(phi)
     qh = qh.reshape(batch_size, qh.shape[1], -1)
     c = jax.vmap(cost, in_axes=0, out_axes=0)(qh, psi) # [ntrajs, nwalls]
+    print(optimizer)
+
+    if optimizer:
+        print(c)
+        qh, c = optimize_fn(optimizer, key, cost)(qh, psi)
+        print(c)
 
     best_qs = c.argmin(axis=1)
     best_q = qh[jnp.arange(batch_size), best_qs]
-    return best_q
+    costs = c.min(axis=1).mean()
 
-def train(args, optimizer, model, key):
+    return best_q, costs
+
+def train(args, optimizer, test_optimizer, model, key):
     samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.n_walls, args.connecting_steps)
     phi_size = args.n_walls
     in_size, out_size = args.latent_dim + phi_size, args.n_walls
@@ -135,17 +152,16 @@ def train(args, optimizer, model, key):
     @eqx.filter_value_and_grad
     def compute_loss(model, phi, q_star, weights):
         qs = model(phi)
-        q_fit = (qs[:, None, :] - q_star[:, :, None, :])**2
+        q_fit = (qs[:, None, :] - q_star[:, :, None, :])**2  #  A = || q_pred - q^* ||^2
         q_fit = jnp.sum(q_fit, axis=-1)
-        best_qs = jnp.argmin(q_fit, axis=2)
-
+        best_qs = jnp.argmin(q_fit, axis=2)  # min_{q_pred} A
 
         # inner minimization
         best_qs = q_fit.min(axis=2)
-        best_qs *= weights
+        best_qs *= weights # Quality(q^*) * min_{q_pred} A
 
         # expectation
-        loss = jnp.mean(best_qs, axis=(1, 0))
+        loss = jnp.mean(best_qs, axis=(1, 0)) # expectation
         return loss
 
     def calculate_confidence(model, phi, q_star, weights):
@@ -183,12 +199,7 @@ def train(args, optimizer, model, key):
         qn = jax.random.uniform(key_solve, shape=(phi.shape[0], args.num_particles, phi.shape[1]*(args.connecting_steps + 1)))
         qhat = jnp.concatenate([qhat, qn], axis=1)
 
-
-        def optimize(x, psi):
-            q_star, c, _ = optimizer(key_solve, range(args.iterations), lambda xh: cost(xh, psi), x)
-            return q_star, c
-
-        q_star, c = jax.vmap(jax.jit(optimize), in_axes=0, out_axes=0)(qhat, probp)
+        q_star, c = optimize_fn(optimizer, key_solve, cost)(qhat, probp)
         weights = jnp.exp(jax.nn.log_softmax(-c, axis=1))
 
        # mean = c.mean(axis=(0, 1))
@@ -202,8 +213,8 @@ def train(args, optimizer, model, key):
             key, key_resample = random.split(key)
             model = model.resample(key_resample)
             key, key_test = random.split(key)
-            test_err, test_std = test(args, model, key)
-            print(f"epoch={epoch+1}, loss={loss : .4f} test_err={test_err : .5f} test_std={test_std : .5f}")
+            test_err, test_std, test_cost = test(args, model, key, test_optimizer)
+            print(f"epoch={epoch+1}, loss={loss : .4f} test_err={test_err : .5f} test_std={test_std : .5f}, test_cost={test_cost: .5f}")
 
     return model
 
@@ -222,12 +233,12 @@ def plot_solutions(args, psi, gt, qs, path):
         q = qs[i]
         gt_ = gt[i]
         args.problem_inst.plot_single_problem(fig, ax, phi, q[None, :], args.connecting_steps, q.shape[0])
-  #      args.problem_inst.plot_single_problem(fig, ax, phi, gt_.reshape(1, 1, -1), 1)
+
     if not args.plot_once:
         args.iter += 1
     fig.savefig(os.path.join(path, f"results/plots{args.iter}.png"))
 
-def test(args, model, key):
+def test(args, model, key, optimizer=None):
     samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.n_walls, args.connecting_steps)
     key_sample, key_solve = jax.random.split(key)
     #key_sample = key_solve = key
@@ -235,8 +246,7 @@ def test(args, model, key):
     gt = jax.vmap(mock_sol, in_axes=(None, 0), out_axes=0)(key_solve, psi)
     phi = get_phi(psi)
     qs = model(phi)
-
-    best_q = eval(model, psi, cost, get_phi, args.problem_inst.PHI_STATE_DIM)
+    best_q, cost = eval(model, psi, cost, get_phi, args.problem_inst.PHI_STATE_DIM, key_solve, optimizer)
     err = jnp.linalg.norm(gt - best_q, axis=-1)
 
     mean_error = jnp.mean(err)
@@ -245,7 +255,7 @@ def test(args, model, key):
     if args.plot:
         plot_solutions(args, psi, gt, qs, args.results_path)
 
-    return mean_error, std_dev
+    return mean_error, std_dev, cost
 
 
 if __name__=='__main__':
@@ -290,7 +300,10 @@ if __name__=='__main__':
     parser.add_argument("--num_particles", type=int, default=50,
             help="Number of particles used for SVGD")
 
-    parser.add_argument("--iterations", type=int, default=1000)
+    parser.add_argument("--test-finetune", action='store_true', default=False)
+    parser.add_argument("--finetune-iterations", type=int, default=50)
+
+    parser.add_argument("--improver-iterations", type=int, default=1000)
     parser.add_argument("--gamma", type=float, default=0.75)
     parser.add_argument("--eta", type=float, default=0.01)
 
@@ -321,14 +334,19 @@ if __name__=='__main__':
 
     model = ZDecoder(args.levels, args.regions, args.latent_dim, phi_size, out_size, key=model_key)
 
-    print_error = lambda err, std: print(f"After training: Testing error: {err}, Testing STD: {std}")
+    print_error = lambda err, std, cost: print(f"After training: Testing error: {err}, Testing STD: {std}, Cost: {cost}")
 
-    optimizer = get_optimizer(args)
+    optimizer = get_optimizer(args, args.improver_iterations)
 
+    args.eta = 0.
+    test_optimizer = get_optimizer(args, args.finetune_iterations)
+
+    test_optimizer = test_optimizer if args.test_finetune else None
+    print(test_optimizer)
     test_1_key, test_2_key = jax.random.split(test_key)
-    print_error(*test(args, model, test_1_key))
-    model = train(args, optimizer,  model, train_key)
-    print_error(*test(args, model, test_2_key))
+    print_error(*test(args, model, test_1_key, test_optimizer))
+    model = train(args, optimizer, test_optimizer, model, train_key)
+    print_error(*test(args, model, test_2_key, test_optimizer))
 
     eqx.tree_serialise_leaves(os.path.join(args.results_path, "model.eqx"),
             model)

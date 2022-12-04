@@ -20,6 +20,8 @@ def plot_single_problem(fig, ax, phi, soln, connecting_steps=0, modes=0):
     for i in range(modes):
         plot_solution(ax, soln[:, i, :])
 
+    ax.set_xlim(-1.5, 1)
+
     ax.tick_params(which='both', bottom=False, top=False, labelbottom=False, labelleft=False)
 
 def make_problem(nwalls=2, connecting_steps=2):
