@@ -25,7 +25,8 @@ import torch
 class MCTS:
     #############################################
 
-    def __init__(self, lb, ub, dims, ninits, func, Cp = 1, leaf_size = 20, kernel_type = "rbf", gamma_type = "auto"):
+    def __init__(self, lb, ub, dims, ninits, func, Cp = 1, leaf_size = 20, kernel_type = "rbf", gamma_type = "auto",
+            solver_type='bo', turbo_steps=20):
         self.dims                    =  dims
         self.samples                 =  []
         self.nodes                   =  []
@@ -43,8 +44,12 @@ class MCTS:
         self.LEAF_SAMPLE_SIZE        =  leaf_size
         self.kernel_type             =  kernel_type
         self.gamma_type              =  gamma_type
+        self.turbo_steps = turbo_steps
         
-        self.solver_type             = 'bo' #solver can be 'bo' or 'turbo'
+        # self.solver_type             = 'bo' #solver can be 'bo' or 'turbo'
+        # self.solver_type             = 'bo' #solver can be 'bo' or 'turbo'
+        self.solver_type = solver_type
+
         
         print("gamma_type:", gamma_type)
         
@@ -238,11 +243,15 @@ class MCTS:
             print("="*10)
             self.dynamic_treeify()
             leaf, path = self.select()
+            print(self.solver_type)
             for i in range(0, 1):
                 if self.solver_type == 'bo':
+                    print('bo')
                     samples = leaf.propose_samples_bo( 1, path, self.lb, self.ub, self.samples )
                 elif self.solver_type == 'turbo':
-                    samples, values = leaf.propose_samples_turbo( 10000, path, self.func )
+                    print('turbo')
+                    samples, values = leaf.propose_samples_turbo( self.turbo_steps, path, self.func )
+                    # samples, values = leaf.propose_samples_turbo( 1, path, self.func )
                 else:
                     raise Exception("solver not implemented")
                 for idx in range(0, len(samples)):

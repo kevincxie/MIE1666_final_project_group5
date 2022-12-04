@@ -1,15 +1,24 @@
 from typing import NamedTuple, Callable, Any
 from dataclasses import dataclass
 
+import math
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 
-
 import optax
 import jaxopt
 
+def problem_dataloader(problems, batch_size):
+    n_problems = problems[0].shape[0] # HACK
+    n_batches_per_epoch = math.ceil(n_problems / batch_size)
+    for batch_i in range(n_batches_per_epoch):
+        if batch_i == n_batches_per_epoch-1:
+            batch_probp = jax.tree_map(lambda x: x[batch_i*batch_size:], problems)
+        else:
+            batch_probp = jax.tree_map(lambda x: x[batch_i*batch_size: (batch_i+1)* batch_size], problems)
+        yield batch_probp
 
 def mock(step_size, iterations, **kwargs):
     """ Identity operator doesn't improve solutions at all """

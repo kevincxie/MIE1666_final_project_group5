@@ -1,7 +1,8 @@
 import numpy as np
 import os
 import json
-from lamcts import MCTS
+from skopt import gp_minimize
+from turbo_1.turbo_1 import Turbo1
 from problems.toy_problem import make_problem, plot_single_problem, get_traj_length
 from argparse import ArgumentParser
 import jax
@@ -45,68 +46,97 @@ class ToyProblemFunc:
         if args:
             self.tracker = tracker(args.results_path)      #defined in functions.py
 
-        #tunable hyper-parametuuers in LA-MCTS
+        #tunable hyper-parameters in LA-MCTS
         self.Cp        = 10
         self.leaf_size = 10
         self.ninits    = 40
         self.kernel_type = "rbf"
-        self.solver_type             = 'turbo' #solver can be 'bo' or 'turbo'
-
         self.gamma_type  = "auto"
 
     def __call__(self, x):
+        # print(x)
+        x = np.array(x)
         # print(x.shape, self.phi[0].shape)
         # Add dummy batch dimension
-        # x = x.reshape((1,1,8,1))
+        #x = x.reshape((8,))
         result = float(np.array(self.cost(x,self.phi)).squeeze())
         self.tracker.track( result )
+        print(result)
         return result
 
 def main(args):
     os.makedirs(args.results_path,exist_ok=True)
-    connecting_steps = 10
     n_walls = 4
+    connecting_steps = 10
     ndims = get_traj_length(n_walls, connecting_steps)
     samp_prob, get_phi, cost, mock_sol = make_problem(nwalls=n_walls, connecting_steps=connecting_steps)
     key = jax.random.PRNGKey(args.seed)
-    psi = samp_prob(key, 1)
     psi = jax.tree_map(lambda x: x.squeeze(0), samp_prob(key, 1))
     opt_cost = cost(np.expand_dims(mock_sol(None, psi),axis=0), psi)
     f = ToyProblemFunc(cost, psi, dims=ndims, args=args)
 
-    turbo_steps = 100
+    # agent = MCTS(
+    #             lb = f.lb,              # the lower bound of each problem dimensions
+    #             ub = f.ub,              # the upper bound of each problem dimensions
+    #             dims = f.dims,          # the problem dimensions
+    #             ninits = f.ninits,      # the number of random samples used in initializations 
+    #             func = f,               # function object to be optimized
+    #             Cp = f.Cp,              # Cp for MCTS
+    #             leaf_size = f.leaf_size, # tree leaf size
+    #             kernel_type = f.kernel_type, #SVM configruation
+    #             gamma_type = f.gamma_type    #SVM configruation
+    #             )
 
-    agent = MCTS(
-                lb = f.lb,              # the lower bound of each problem dimensions
-                ub = f.ub,              # the upper bound of each problem dimensions
-                dims = f.dims,          # the problem dimensions
-                ninits = f.ninits,      # the number of random samples used in initializations 
-                func = f,               # function object to be optimized
-                Cp = f.Cp,              # Cp for MCTS
-                leaf_size = f.leaf_size, # tree leaf size
-                kernel_type = f.kernel_type, #SVM configruation
-                gamma_type = f.gamma_type,    #SVM configruation
-                solver_type = f.solver_type,
-                turbo_steps= turbo_steps
-                )
+    # res = gp_minimize(f,                  # the function to minimize
+    #               [(-2.0, 2.0)]*ndims,      # the bounds on each dimension of x
+    #               acq_func="EI",      # the acquisition function
+    #               n_calls=100,         # the number of evaluations of f
+    #               n_random_starts=5,  # the number of random initialization points
+    #               noise=0.1**2,       # the noise level (optional)
+    #               random_state=1234)   # the random seed
+    # x, fun = res.x, res.fun 
+    # X_init = 
+    num_samples = 2000
+    turbo1 = Turbo1(
+        f  = f,              # Handle to objective function
+        lb = f.lb,           # Numpy array specifying lower bounds
+        ub = f.ub,           # Numpy array specifying upper bounds
+        n_init = 30,            # Number of initial bounds from an Latin hypercube design
+        max_evals  = num_samples, # Maximum number of evaluations
+        batch_size = 1,         # How large batch size TuRBO uses
+        verbose=True,           # Print information from each batch
+        use_ard=True,           # Set to true if you want to use ARD for the GP kernel
+        max_cholesky_size=2000, # When we switch from Cholesky to Lanczos
+        n_training_steps=50,    # Number of steps of ADAM to learn the hypers
+        min_cuda=1024,          #  Run on the CPU for small datasets
+        device="cpu",           # "cpu" or "cuda"
+        dtype="float32",        # float64 or float32
+        X_init = np.random.uniform(size = (1, n_walls *(connecting_steps+1))),
+    )
+    
+    x, fun = turbo1.optimize( )
 
-    agent.search(iterations = 1000)
+
+    # agent.search(iterations = 100)
+    # x, fun = proposed_X, 
+    print(f"{x} {fun}")
+    # "x^*=%.4f, f(x^*)=%.4f" % (res.x, res.fun)
+
 
     i=0
-    # phi = (psi[0][i], psi[1][i])
     phi = (psi[0], psi[1])
-    q = agent.curt_best_sample
+    # q = agent.curt_best_sample
+    q = np.array(x)
     print(q)
     q = np.expand_dims(q, axis=0)
 
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots()
-    # plot_single_problem(fig, ax, phi, q[None, :], q.shape[0])
     plot_single_problem(fig, ax, phi, q[None, :], connecting_steps=connecting_steps, modes=q.shape[0],)
     fig.savefig(os.path.join(args.results_path, "plots.png"))
 
     fig, ax = plt.subplots()
-    ax.plot(f.tracker.results, label='LAMCTS')
+    ax.plot(f.tracker.results, label='BO')
     ax.axhline(opt_cost, c='red', label='Optimal')
     fig.savefig(os.path.join(args.results_path, "perf_plots.png"))
 
@@ -114,8 +144,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    # parser.add_argument("--results_path", type=str, default="results/lamcts/")
-    parser.add_argument("--results_path", type=str, default="results/lamcts/turbo")
+    parser.add_argument("--results_path", type=str, default="results/turbo/")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--rows", type=int, default=1, help="Number of columns in the plot grid")
     args = parser.parse_args()

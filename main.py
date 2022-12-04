@@ -23,6 +23,8 @@ from functools import partial
 
 import problems
 
+from ops.common import problem_dataloader
+
 import ops.common
 import svgd_utils
 
@@ -49,6 +51,7 @@ class ZDecoder(eqx.Module):
         self.regions = regions
         self.out_shape = (out_size,)
         self.identity_decoder = identity_decoder
+        in_size = 2*latent_dim // levels + phi_size #// args.levels
 
         wkey, bkey, Zkey = jax.random.split(key, num=3)
 #       self.weight2 = jax.random.normal(bkey, (out_size, phi_size))
@@ -67,7 +70,7 @@ class ZDecoder(eqx.Module):
     @partial(jax.vmap, in_axes=(None, 0, None, 0), out_axes=0) # Levels
 #    @partial(jax.vmap, in_axes=(None, 0, None, None), out_axes=0) # Regions
     def eval_mlp(self, x, phi, idx_vec):
-        print(x.shape, phi.shape, idx_vec.shape)
+        # print(x.shape, phi.shape, idx_vec.shape)
         return self.model(jnp.concatenate([x, phi, idx_vec], axis=-1))
 
     @partial(jax.vmap, in_axes=(None, 0), out_axes=0)
@@ -84,7 +87,7 @@ class ZDecoder(eqx.Module):
         region_array = jnp.mgrid[:self.levels, :self.regions].transpose(1, 2, 0)
         indexed = self.build_regions(region_array[None])[0]
         culled_region_indices = indexed[indices]
-        print(culled_region_indices.shape)
+        # print(culled_region_indices.shape)
         if culled_region_indices.shape[1] > 0:
          #   print(culled_region_indices)
             new_regions = jax.random.normal(key, shape=(culled_region_indices.shape[0],1))
@@ -103,14 +106,14 @@ class ZDecoder(eqx.Module):
         idx_vecs = jnp.eye(self.levels) # Batch, regions**levels, 1
 
         zs = self.build_regions(self.region_params[None])[0]
-        print(zs.shape)
+        # print(zs.shape)
         future = jnp.roll(zs, -1, axis=1)
         x = jnp.concatenate([zs, future], axis=-1)
 
         qs = self.eval_mlp(x, phi, idx_vecs) # [Batch, levels, regions, q_size]
 #        trajectories = self.build_regions(qs)
 #        trajectories = trajectories.reshape(batch_size, trajectories.shape[1], -1)
-        print(qs.shape)
+        # print(qs.shape)
 
         return qs.reshape(batch_size, qs.shape[1], -1)
 
@@ -130,9 +133,10 @@ def eval(model, psi, cost, get_phi, state_dim):
     best_q = qh[jnp.arange(batch_size), best_qs]
     return best_q
 
-def train(args, optimizer, model, key):
+def train(args, optimizer, model, key, problems_train=None):
     samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.n_walls, args.connecting_steps)
     phi_size = args.n_walls
+    train_batch_size = args.problem_batch_size
     in_size, out_size = args.latent_dim + phi_size, args.n_walls
 
     @eqx.filter_value_and_grad
@@ -178,30 +182,41 @@ def train(args, optimizer, model, key):
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
     for epoch in range(args.epochs):
-        key, key_sample, key_solve = jax.random.split(key, 3)
-        probp = samp_prob(key_sample, batch_size=args.problem_batch_size)
-        phi = get_phi(probp).reshape(args.problem_batch_size, -1)
-        qhat = model(phi)
+        if problems_train is None:
+            # If we don't have dataset, each epoch is just a random sampled batch
+            key, key_sample = jax.random.split(key,2)
+            probp = samp_prob(key_sample, batch_size=train_batch_size)
+            epoch_problems = [probp]
+        else:
+            key, shuffle_key = jax.random.split(key)
+            shuffle_problems_train = jax.tree_map(lambda x: jax.random.shuffle(shuffle_key, x), problems_train)
+            epoch_problems = problem_dataloader(shuffle_problems_train, train_batch_size)
 
-        qn = jax.random.uniform(key_solve, shape=(phi.shape[0], args.num_particles, phi.shape[1]*(args.connecting_steps + 1)))
-        qhat = jnp.concatenate([qhat, qn], axis=1)
+        for batch_probp in epoch_problems:
+            key, key_solve = jax.random.split(key, 2)
+            phi = get_phi(batch_probp).reshape(train_batch_size, -1)
+            qhat = model(phi)
+
+            qn = jax.random.uniform(key_solve, shape=(phi.shape[0], args.num_particles, phi.shape[1]*(args.connecting_steps+1)))
+            qhat = jnp.concatenate([qhat, qn], axis=1)
 
 
-        def optimize(x, psi):
-            q_star, c, _ = optimizer(key_solve, range(args.iterations), lambda xh: cost(xh, psi), x)
-            return q_star, c
+            def optimize(x, psi):
+                q_star, c, _ = optimizer(key_solve, range(args.iterations), lambda xh: cost(xh, psi), x)
+                return q_star, c
 
-        q_star, c = jax.vmap(jax.jit(optimize), in_axes=0, out_axes=0)(qhat, probp)
-        weights = jnp.exp(jax.nn.log_softmax(-c, axis=1))
+            q_star, c = jax.vmap(jax.jit(optimize), in_axes=0, out_axes=0)(qhat, batch_probp)
+            weights = jnp.exp(jax.nn.log_softmax(-c, axis=1))
 
-       # mean = c.mean(axis=(0, 1))
-       # std = c.std(axis=(0, 1))
-       # print(mean, std)
+            # mean = c.mean(axis=(0, 1))
+            # std = c.std(axis=(0, 1))
+            # print(mean, std)
 
-        loss, model, opt_state = make_step(model, phi, q_star, opt_state, weights)
+            loss, model, opt_state = make_step(model, phi, q_star, opt_state, weights)
 
-        loss = loss.item()
-        if (epoch + 1) % 10 == 0:
+            loss = loss.item()
+
+        if (epoch + 1) % 5 == 0:
             key, key_resample = random.split(key)
             model = model.resample(key_resample)
             key, key_test = random.split(key)
@@ -228,13 +243,15 @@ def plot_solutions(args, psi, gt, qs, path, connecting_steps):
   #      args.problem_inst.plot_single_problem(fig, ax, phi, gt_.reshape(1, 1, -1), 1)
     if not args.plot_once:
         args.iter += 1
+    os.makedirs(os.path.join(path, f"results/"), exist_ok=True)
     fig.savefig(os.path.join(path, f"results/plots{args.iter}.png"))
 
 def test(args, model, key):
+    test_batch_size = 1 # args.test_batch_size
     samp_prob, get_phi, cost, mock_sol = args.problem_inst.make_problem(args.n_walls, args.connecting_steps)
     key_sample, key_solve = jax.random.split(key)
     #key_sample = key_solve = key
-    psi = samp_prob(key_sample, args.test_batch_size)
+    psi = samp_prob(key_sample, test_batch_size)
     gt = jax.vmap(mock_sol, in_axes=(None, 0), out_axes=0)(key_solve, psi)
     phi = get_phi(psi)
     qs = model(phi)
@@ -245,8 +262,9 @@ def test(args, model, key):
     mean_error = jnp.mean(err)
     std_dev = jnp.std(err)
 
+    print(psi[0].shape, gt.shape, qs.shape)
     if args.plot:
-        plot_solutions(args, psi, gt, qs, args.results_path)
+        plot_solutions(args, psi, gt, qs, args.results_path, args.connecting_steps)
 
     return mean_error, std_dev
 

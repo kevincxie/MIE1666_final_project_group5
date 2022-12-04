@@ -22,6 +22,9 @@ def plot_single_problem(fig, ax, phi, soln, connecting_steps=0, modes=0):
 
     ax.tick_params(which='both', bottom=False, top=False, labelbottom=False, labelleft=False)
 
+def get_traj_length(nwalls, connecting_steps):
+    return nwalls + connecting_steps * (nwalls)
+
 def make_problem(nwalls=2, connecting_steps=2):
     # Represents ndim walls, each with 2 holes, q is ndim long and each dim
     # corresponds to a wall

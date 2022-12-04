@@ -15,7 +15,7 @@ setuptools.setup(
      long_description = long_description,
      long_description_content_type = "text/markdown",
      url = "https://github.com/facebookresearch/LaMCTS",
-     packages = ["lamcts"],
+     packages = ["lamcts", "turbo_1"],
      install_requires=required,
      include_package_data = True,
      classifiers = [

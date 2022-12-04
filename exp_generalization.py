@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import importlib
@@ -20,23 +21,16 @@ from typing import Callable
 from functools import partial
 
 import problems
+from problems.toy_problem import get_traj_length
 import svgd_utils
 
-from main import ZDecoder
+from ops.common import problem_dataloader
+
+from main import ZDecoder, get_optimizer
 from main import plot_solutions
+from main import train as train_with_sgld
 
-
-def problem_dataloader(problems, batch_size):
-    n_problems = problems[0].shape[0] # HACK
-    n_batches_per_epoch = math.ceil(n_problems / batch_size)
-    for batch_i in range(n_batches_per_epoch):
-        if batch_i == n_batches_per_epoch-1:
-            batch_probp = jax.tree_map(lambda x: x[batch_i*batch_size:], problems)
-        else:
-            batch_probp = jax.tree_map(lambda x: x[batch_i*batch_size: (batch_i+1)* batch_size], problems)
-        yield batch_probp
-
-def train(args, model, key, problems_train, problems_test, verbose=True):
+def train_with_oracle(args, model, key, problems_train, problems_test, verbose=True):
     """
     Args:
         problems_train: tuple of all training batched problem params
@@ -223,47 +217,70 @@ def get_oracle_perf(args, key, probp_test):
     print(q_oracle.shape)
     return jnp.mean(cost(q_oracle, probp_test), axis=0)
 
+def save_perf_dict(perf_dict, result_path):
+    with open(os.path.join(result_path, 'metrics.pkl'),'wb') as f:
+        pickle.dump(perf_dict, f)
+
 def main(args):
+    if args.use_oracle:
+        args.results_path = 'gen_oracle'
+    else:
+        args.results_path = 'gen_sgld'
+
     # Simpler for now
     args.n_walls = args.n_walls
     args.problem_inst = importlib.import_module(f"problems.{args.problem}")
 
     # HACK: hard_coding this
-    args.connecting_steps = 1
-    args.trajectory_length = args.n_walls + args.connecting_steps * (args.n_walls-1)
+    args.connecting_steps = 10
+    # args.trajectory_length = args.n_walls + args.connecting_steps * (args.n_walls-1)
+    args.trajectory_length = get_traj_length(args.n_walls, args.connecting_steps)
+    args.latent_dim = args.n_walls
 
     key = jax.random.PRNGKey(args.seed)
     key, data_key = jax.random.split(key)
 
 
-    train_data_size = 500
-    test_data_size = 2000
+    train_data_size = 30 
+    test_data_size = 1000
     probp_train, probp_test = get_data(args, train_data_size, test_data_size, data_key)
     assert probp_train[0].shape[0] == train_data_size
     assert probp_test[0].shape[0] == test_data_size
 
     phi_size = args.n_walls * args.problem_inst.PHI_STATE_DIM
-    out_size = (args.trajectory_length * args.problem_inst.PHI_STATE_DIM, )
+    # out_size = args.trajectory_length #* args.problem_inst.PHI_STATE_DIM
+
+    out_size = args.trajectory_length // args.n_walls
+    print(out_size)
 
     # Compute oracle performance on mock solutions
     oracle_cost = get_oracle_perf(args, key, probp_test).item()
     print(f"Oracle cost {oracle_cost : .4f}")
 
-    def run_model_data_ablation(model_constructor, train_sizes):
+    def run_model_data_ablation(model_constructor, train_sizes, n_epochs, use_oracle=args.use_oracle):
         avg_test_costs = []
-        for train_size in train_sizes:
+        for i, train_size in enumerate(train_sizes):
+            print("Training with dataset of size {}".format(train_size))
             # Train new model with different fraction of training data
             # model = ZDecoder(args.levels, args.regions, args.latent_dim, phi_size, out_size, key=jax.random.PRNGKey(0))
             model = model_constructor()
 
             probp_train_frac = jax.tree_map(lambda x: x[:train_size], probp_train)
-            model = train(args, model, key, probp_train_frac, probp_test)
+            # args.epochs = n_epochs[i]
+            if use_oracle:
+                model = train_with_oracle(args, model, key, probp_train_frac, probp_test)
+            else:
+                optimizer = get_optimizer(args)
+                model = train_with_sgld(args, optimizer, model, key, probp_train_frac)
             avg_test_cost = test(args,model, key, probp_test)
             avg_test_costs.append(avg_test_cost)
         return {'train_sizes':train_sizes, 'avg_test_costs': avg_test_costs}
 
-    n_fracs = 10
+    n_fracs = 3
     fracs = [(1.+i)/n_fracs for i in range(n_fracs)]
+    # Run more epochs on less data so it's same effective amount of iters
+    num_epochs = [args.epochs * (i+1) for i in range(n_fracs)[::-1]]
+
     train_sizes = [min(round(frac*train_data_size),train_data_size) for frac in fracs]
 
     perf_per_model = {}
@@ -272,25 +289,25 @@ def main(args):
     if args.connecting_steps == 0:
         perf_per_model['no_decoder'] = run_model_data_ablation(
             lambda: ZDecoder(levels=args.n_walls, regions=args.regions, 
-            latent_dim=args.n_walls, phi_size=phi_size, out_shape=out_size, key=key,
-            identity_decoder=True), train_sizes)
+            latent_dim=args.n_walls, phi_size=phi_size, out_size=out_size, key=key,
+            identity_decoder=True), train_sizes, num_epochs)
     print('Training full')
     args.plot = True
-    args.results_path = 'gen_perf_traj_full'
+    # args.results_path = 'gen_perf_traj_full'
     perf_per_model['full'] = run_model_data_ablation(
         lambda: ZDecoder(levels=args.n_walls, regions=args.regions, 
-        latent_dim=args.n_walls, phi_size=phi_size, out_shape=out_size, key=key,
-        identity_decoder=False), train_sizes)
+        latent_dim=args.n_walls, phi_size=phi_size, out_size=out_size, key=key,
+        identity_decoder=False), train_sizes, num_epochs)
     args.plot = False
     print('Training no_Z')
     perf_per_model['no_Z'] = run_model_data_ablation(
         lambda: ZDecoder(levels=args.n_walls, regions=1, 
-        latent_dim=args.n_walls, phi_size=phi_size, out_shape=out_size, key=key,
-        identity_decoder=False), train_sizes)
-        
+        latent_dim=args.n_walls, phi_size=phi_size, out_size=out_size, key=key,
+        identity_decoder=False), train_sizes, num_epochs)
     print(perf_per_model)
 
 
+    save_perf_dict({"oracle_cost":oracle_cost,"perf_per_model":perf_per_model}, args.results_path)
     fig, ax = plt.subplots()
     ax.set_title('Generalization Performance Ablations')
     ax.set_xlabel('Number of Training Samples')
@@ -316,7 +333,7 @@ if __name__=='__main__':
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--problem", type=str, default="toy_problem")
 
-    parser.add_argument("--problem_batch_size", type=int, default=50,
+    parser.add_argument("--problem_batch_size", type=int, default=10,
             help="For each iteration how many problems to sample")
     parser.add_argument("--epochs", type=int, default=100,
             help="Total iteration count")
@@ -331,7 +348,7 @@ if __name__=='__main__':
             help="For testing how many problems to sample")
     # parser.add_argument("--latent_dim", type=int, default=8,
     #         help="Dimensions in the latent space")
-    parser.add_argument("--n_walls", type=int, default=8,
+    parser.add_argument("--n_walls", type=int, default=4,
             help="Number of dimensions in the problem," +
             "corresponds to the number of walls")
 
@@ -340,16 +357,25 @@ if __name__=='__main__':
     parser.add_argument("--plot_height", type=int, default=6)
     parser.add_argument("--plot_width", type=int, default=8)
 
-    parser.add_argument("--lr", type=float, default=1e-2)
+    parser.add_argument("--lr", type=float, default=5e-2)
     parser.add_argument("--decay", type=float, default=1.)
 
     parser.add_argument("--results_path", type=str, default=".")
-    parser.add_argument("--num_particles", type=int, default=100, 
+
+    subparsers = parser.add_argument("--optimizer", type=str, default='sgld')
+
+    parser.add_argument("--num_particles", type=int, default=50,
             help="Number of particles used for SVGD")
-    parser.add_argument("--sgld", type=bool, default=False,
-            help="Use sgld if true")
-    parser.add_argument("--svgd", type=bool, default=False,
-            help="Use svgd if true")
+    parser.add_argument("--iterations", type=int, default=1000)
+    parser.add_argument("--gamma", type=float, default=0.75)
+    parser.add_argument("--eta", type=float, default=0.01)
+
+    parser.add_argument("--optim-step-size", type=float, default=0.01)
+
+    parser.add_argument("--plot-once", action='store_true', default=True)
+
+    parser.add_argument("--use_oracle", action='store_true', default=False)
 
     args = parser.parse_args()
+    args.iter = 0
     main(args)
